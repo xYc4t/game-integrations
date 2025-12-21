@@ -10,7 +10,7 @@ Add dpatchz module to your package inputs:
 {
     "version": 1,
     "inputs": {
-        "dpatchz": "https://raw.githubusercontent.com/an-anime-team/game-integrations/refs/heads/rewrite/dpatchz/dpatchz.luau"
+        "dpatchz": "http://127.0.0.1:8080/dpatchz/dpatchz.luau"
     }
 }
 ```

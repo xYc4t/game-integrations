@@ -1,12 +1,12 @@
 {
     "version": 1,
     "inputs": {
-        "iterable": "https://raw.githubusercontent.com/an-anime-team/game-integrations/refs/heads/rewrite/packages/iterable/iterable.luau",
-        "i18n": "https://raw.githubusercontent.com/an-anime-team/game-integrations/refs/heads/rewrite/packages/i18n/package.json",
-        "settings": "https://raw.githubusercontent.com/an-anime-team/game-integrations/refs/heads/rewrite/packages/settings/settings.luau",
-        "dpatchz": "https://raw.githubusercontent.com/an-anime-team/game-integrations/refs/heads/rewrite/packages/dpatchz/dpatchz.luau",
-        "jadeite": "https://raw.githubusercontent.com/an-anime-team/game-integrations/refs/heads/rewrite/packages/jadeite/jadeite.luau",
-        "components": "https://raw.githubusercontent.com/an-anime-team/game-integrations/refs/heads/rewrite/packages/components/package.json"
+        "iterable": "http://127.0.0.1:8080/packages/iterable/iterable.luau",
+        "i18n": "http://127.0.0.1:8080/packages/i18n/package.json",
+        "settings": "http://127.0.0.1:8080/packages/settings/settings.luau",
+        "dpatchz": "http://127.0.0.1:8080/packages/dpatchz/dpatchz.luau",
+        "jadeite": "http://127.0.0.1:8080/packages/jadeite/jadeite.luau",
+        "components": "http://127.0.0.1:8080/packages/components/package.json"
     },
     "outputs": {
         "integration": "integration.luau"
