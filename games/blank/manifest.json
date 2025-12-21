@@ -16,15 +16,15 @@
         "publisher": "Example publisher",
         "images": {
             "icon": "http://127.0.0.1:8080/games/blank/icon.jpg",
-            "poster": "http://127.0.0.1:8080/games/votv/poster.jpg",
-            "background": "http://127.0.0.1:8080/games/votv/background.jpg",
+            "poster": "http://127.0.0.1:8080/games/blank/poster.jpg",
+            "background": "http://127.0.0.1:8080/games/blank/background.jpg",
             "slides": [
-                "http://127.0.0.1:8080/games/votv/background.jpg"
+                "http://127.0.0.1:8080/games/blank/background.jpg"
             ]
         }
     },
     "package": {
-        "url": "http://127.0.0.1:8080/games/votv/package.json",
+        "url": "http://127.0.0.1:8080/games/blank/package.json",
         "output": "integration"
     }
 }
