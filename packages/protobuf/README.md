@@ -11,7 +11,7 @@ Add protobuf module to your package inputs:
 {
     "format": 1,
     "inputs": {
-        "protobuf": "https://raw.githubusercontent.com/an-anime-team/game-integrations/refs/heads/rewrite/packages/protobuf/protobuf.luau"
+        "protobuf": "http://127.0.0.1:8080/packages/protobuf/protobuf.luau"
     }
 }
 ```
