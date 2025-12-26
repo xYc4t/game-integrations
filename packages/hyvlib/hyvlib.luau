@@ -112,6 +112,21 @@ type SophonInfo = {
     manifests: { SophonManifestInfo }
 }
 
+type SophonAsset = {
+    name: string,
+    size: number,
+    hash_md5: string,
+    chunks: { SophonChunk }
+}
+
+type SophonChunk = {
+    name: string,
+    compressed_size: number,
+    decompressed_size: number,
+    compressed_hash_md5: string,
+    decompressed_hash_md5: string
+}
+
 ----------------------------------------
 -- Constants
 
@@ -133,8 +148,9 @@ local current_platform: string = "x86_64-linux" -- make it an argument somewhere
 
 local temp_folder: string = path.join(path.temp_dir(), "hyvlib")
 
-local sophon_manifests_folder: string = path.join(temp_folder, "manifests")
-local sophon_chunks_folder: string    = path.join(temp_folder, "chunks")
+local sophon_manifests_folder: string       = path.join(temp_folder, "manifests")
+local sophon_manifests_cache_folder: string = path.join(temp_folder, "manifests_cache")
+local sophon_chunks_folder: string          = path.join(temp_folder, "chunks")
 
 local sophon_manifest_protobuf: string = path.join(temp_folder, "manifest.proto")
 
@@ -153,7 +169,51 @@ local function calc_file_md5(path: string): string
     return str.encode(hash.digitize_file("md5", path), "hex")
 end
 
-local function decode_sophon_manifest(path: string)
+----------------------------------------
+-- Sophon
+
+local function parse_sophon_manifest(manifest: string): { SophonAsset }
+    local assets: { SophonAsset } = {}
+    local asset: SophonAsset = {} :: SophonAsset
+    local chunk: SophonChunk = {} :: SophonChunk
+
+    for _, line in manifest:split("\n") do
+        if line == "}" then
+            table.insert(assets, asset :: SophonAsset)
+
+            asset = {} :: SophonAsset
+            chunk = {} :: SophonChunk
+        elseif line:sub(0, 6) == "  name" then
+            asset.name = line:sub(10, -2)
+        elseif line:sub(0, 6) == "  size" then
+            asset.size = tonumber(line:sub(9)) :: number
+        elseif line:sub(0, 10) == "  hash_md5" then
+            asset.hash_md5 = line:sub(14, -2)
+        elseif line:sub(0, 8) == "    name" then
+            chunk.name = line:sub(12, -2)
+        elseif line:sub(0, 23) == "    compressed_hash_md5" then
+            chunk.compressed_hash_md5 = line:sub(27, -2)
+        elseif line:sub(0, 25) == "    decompressed_hash_md5" then
+            chunk.decompressed_hash_md5 = line:sub(29, -2)
+        elseif line:sub(0, 19) == "    compressed_size" then
+            chunk.compressed_size = tonumber(line:sub(22)) :: number
+        elseif line:sub(0, 21) == "    decompressed_size" then
+            chunk.decompressed_size = tonumber(line:sub(24)) :: number
+        elseif line:sub(0, 3) == "  }" then
+            if not asset.chunks then
+                asset.chunks = { chunk }
+            else
+                table.insert(asset.chunks, chunk)
+            end
+
+            chunk = {} :: SophonChunk
+        end
+    end
+
+    return assets :: { SophonAsset }
+end
+
+local function decode_sophon_manifest(path: string): { SophonAsset }
     local protobuf, sophon_manifest_protobuf_src = import("protobuf", "sophon-manifest-protobuf")
 
     if not __protobuf_installed then
@@ -178,20 +238,20 @@ local function decode_sophon_manifest(path: string)
         input = path
     })
 
-    dbg(manifest)
+    return parse_sophon_manifest(manifest)
 end
 
 ----------------------------------------
 -- Fetch sophon API
 
-local function fetch_sophon_api(edition: Edition, raw_game_info: RawGameInfo): any
+local function fetch_sophon_api(edition: Edition, raw_game_info: RawGameInfo): SophonInfo
     local index = `{edition}-{raw_game_info.game.id}`
 
     if __sophon_api_cache[index] then
         return __sophon_api_cache[index]
     end
 
-    local iter, semver, protobuf = import("iterable", "semver", "protobuf")
+    local iter, semver = import("iterable", "semver")
 
     local response = net.fetch(`{api_info[edition].sophon_api_url}/downloader/sophon_chunk/api/getBuild?branch={raw_game_info.main.branch}&package_id={raw_game_info.main.package_id}&password={raw_game_info.main.password}`)
 
@@ -216,11 +276,20 @@ local function fetch_sophon_api(edition: Edition, raw_game_info: RawGameInfo): a
 
                     fetch = function(updater: (current: number, total: number) -> ())
                         local manifest_path: string = path.join(sophon_manifests_folder, sophon_info.manifest.id)
+                        local cache_path: string = path.join(sophon_manifests_cache_folder, sophon_info.manifest.checksum)
 
                         if fs.exists(manifest_path) and calc_file_md5(manifest_path) == sophon_info.manifest.checksum then
-                            decode_sophon_manifest(manifest_path)
+                            if fs.exists(cache_path) then
+                                local manifest = fs.read_file(cache_path)
 
-                            return
+                                return str.decode(str.from_bytes(manifest), "json")
+                            end
+
+                            local manifest = decode_sophon_manifest(manifest_path)
+
+                            fs.write_file(cache_path, str.encode(manifest, "json"))
+
+                            return manifest
                         end
 
                         local url = `{sophon_info.manifest_download.url_prefix}{sophon_info.manifest_download.url_suffix}/{sophon_info.manifest.id}`
@@ -250,9 +319,11 @@ local function fetch_sophon_api(edition: Edition, raw_game_info: RawGameInfo): a
                             error(`downloaded manifest '{url}' to '{manifest_path}' has invalid hash`)
                         end
 
-                        decode_sophon_manifest(manifest_path)
+                        local manifest = decode_sophon_manifest(manifest_path)
 
-                        return
+                        fs.write_file(cache_path, str.encode(manifest, "json"))
+
+                        return manifest
                     end
                 }
             }

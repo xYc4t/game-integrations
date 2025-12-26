@@ -4,6 +4,7 @@
         "import": "http://127.0.0.1:8080/packages/import/import.luau",
         "semver": "http://127.0.0.1:8080/packages/semver/semver.luau",
         "iterable": "http://127.0.0.1:8080/packages/iterable/iterable.luau",
+        "protobuf": "http://127.0.0.1:8080/packages/protobuf/protobuf.luau",
         "sophon-manifest-protobuf": "sophon/manifest.proto"
     },
     "outputs": {
