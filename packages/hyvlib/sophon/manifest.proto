@@ -1,0 +1,50 @@
+// Author: @JohnTheCoolingFan <https://github.com/JohnTheCoolingFan>
+// Source: https://github.com/an-anime-team/anime-game-core/blob/e790f5fa9c6d4a978bf19652ebef3b282d2a82b9/src/sophon/protos/SophonManifest.proto
+
+syntax = "proto3";
+
+package sophon;
+
+message Manifest {
+    repeated Asset assets = 1;
+}
+
+message Asset {
+    // Path to the file relative to the game directory.
+    string name = 1;
+
+    // File chunks info.
+    repeated Chunk chunks = 2;
+
+    // 0 for files, 64 for directories. No other values were ever observed.
+    uint32 type = 3;
+
+    // Total size of the entire file in bytes.
+    uint64 size = 4;
+
+    // MD5 checksum of the entire file.
+    string hash_md5 = 5;
+}
+
+message Chunk {
+    // Chunk name.
+    string name = 1;
+
+    // MD5 checksum of the uncompressed chunk data.
+    string decompressed_hash_md5 = 2;
+
+    // Offset at which this chunk should be put into the resulting file.
+    uint64 file_offset = 3;
+
+    // Total size of the compressed chunk in bytes.
+    uint64 compressed_size = 4;
+
+    // Total size of the decompressed chunk in bytes.
+    uint64 decompressed_size = 5;
+
+    // Unknown 64 bit field, perhaps some short checksum algorithm.
+    uint64 _reserved = 6;
+
+    // MD5 checksum of the compressed chunk data.
+    string compressed_hash_md5 = 7;
+}

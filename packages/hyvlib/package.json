@@ -1,9 +1,10 @@
 {
     "version": 1,
     "inputs": {
+        "import": "http://127.0.0.1:8080/packages/import/import.luau",
         "semver": "http://127.0.0.1:8080/packages/semver/semver.luau",
         "iterable": "http://127.0.0.1:8080/packages/iterable/iterable.luau",
-        "i18n": "http://127.0.0.1:8080/packages/i18n/package.json"
+        "sophon-manifest-protobuf": "sophon/manifest.proto"
     },
     "outputs": {
         "hyvlib": "hyvlib.luau"
