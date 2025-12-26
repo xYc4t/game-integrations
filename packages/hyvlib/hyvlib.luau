@@ -102,7 +102,14 @@ type SophonManifestInfo = {
         compressed_size: string,
         uncompressed_size: string,
         md5_checksum: string,
-        fetch: (updater: (current: number, total: number) -> ()) -> ()
+        fetch: (updater: ((current: number, total: number) -> ()) | nil) -> { SophonAsset }
+    },
+    chunk: {
+        compressed_size: string,
+        uncompressed_size: string,
+        file_count: string,
+        chunk_count: string,
+        fetch: (updater: ((current: number, total: number) -> ()) | nil) -> ()
     }
 }
 
@@ -121,10 +128,11 @@ type SophonAsset = {
 
 type SophonChunk = {
     name: string,
+    offset: number,
     compressed_size: number,
-    decompressed_size: number,
+    uncompressed_size: number,
     compressed_hash_md5: string,
-    decompressed_hash_md5: string
+    uncompressed_hash_md5: string
 }
 
 ----------------------------------------
@@ -178,6 +186,8 @@ local function parse_sophon_manifest(manifest: string): { SophonAsset }
     local chunk: SophonChunk = {} :: SophonChunk
 
     for _, line in manifest:split("\n") do
+        dbg(line)
+
         if line == "}" then
             table.insert(assets, asset :: SophonAsset)
 
@@ -191,14 +201,16 @@ local function parse_sophon_manifest(manifest: string): { SophonAsset }
             asset.hash_md5 = line:sub(14, -2)
         elseif line:sub(0, 8) == "    name" then
             chunk.name = line:sub(12, -2)
+        elseif line:sub(0, 15) == "    file_offset" then
+            chunk.offset = tonumber(line:sub(17)) :: number
         elseif line:sub(0, 23) == "    compressed_hash_md5" then
             chunk.compressed_hash_md5 = line:sub(27, -2)
-        elseif line:sub(0, 25) == "    decompressed_hash_md5" then
-            chunk.decompressed_hash_md5 = line:sub(29, -2)
+        elseif line:sub(0, 25) == "    uncompressed_hash_md5" then
+            chunk.uncompressed_hash_md5 = line:sub(29, -2)
         elseif line:sub(0, 19) == "    compressed_size" then
             chunk.compressed_size = tonumber(line:sub(22)) :: number
-        elseif line:sub(0, 21) == "    decompressed_size" then
-            chunk.decompressed_size = tonumber(line:sub(24)) :: number
+        elseif line:sub(0, 21) == "    uncompressed_size" then
+            chunk.uncompressed_size = tonumber(line:sub(24)) :: number
         elseif line:sub(0, 3) == "  }" then
             if not asset.chunks then
                 asset.chunks = { chunk }
@@ -274,7 +286,7 @@ local function fetch_sophon_api(edition: Edition, raw_game_info: RawGameInfo): S
                     uncompressed_size = sophon_info.manifest.uncompressed_size,
                     md5_checksum = sophon_info.manifest.checksum,
 
-                    fetch = function(updater: (current: number, total: number) -> ())
+                    fetch = function(updater: ((current: number, total: number) -> ()) | nil): { SophonAsset }
                         local manifest_path: string = path.join(sophon_manifests_folder, sophon_info.manifest.id)
                         local cache_path: string = path.join(sophon_manifests_cache_folder, sophon_info.manifest.checksum)
 
@@ -324,6 +336,17 @@ local function fetch_sophon_api(edition: Edition, raw_game_info: RawGameInfo): S
                         fs.write_file(cache_path, str.encode(manifest, "json"))
 
                         return manifest
+                    end
+                },
+
+                chunk = {
+                    compressed_size = sophon_info.stats.compressed_size,
+                    uncompressed_size = sophon_info.stats.uncompressed_size,
+                    file_count = sophon_info.stats.file_count,
+                    chunk_count = sophon_info.stats.chunk_count,
+
+                    fetch = function(updater: ((current: number, total: number) -> ()) | nil)
+
                     end
                 }
             }
