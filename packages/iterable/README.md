@@ -8,7 +8,7 @@ Add iterable module to your package inputs:
 
 ```json
 {
-    "version": 1,
+    "format": 1,
     "inputs": {
         "iterable": "http://127.0.0.1:8080/packages/iterable/iterable.lua"
     }
