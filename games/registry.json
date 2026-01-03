@@ -1,5 +1,5 @@
 {
-    "version": 1,
+    "format": 1,
     "games": [
         {
             "url": "http://127.0.0.1:8080/games/genshin/manifest.json",

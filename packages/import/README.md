@@ -9,7 +9,7 @@ Add `import` luau module to your integration package inputs:
 
 ```json
 {
-    "version": 1,
+    "format": 1,
     "inputs": {
         "import": "http://127.0.0.1:8080/packages/import/import.luau"
     }
