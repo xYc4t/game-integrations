@@ -1,5 +1,5 @@
 -- hyvlib v0.1.0
--- Copyright (C) 2025  Nikita Podvirnyi <krypt0nn@vk.com>
+-- Copyright (C) 2025 - 2026  Nikita Podvirnyi <krypt0nn@vk.com>
 --
 -- This program is free software: you can redistribute it and/or modify
 -- it under the terms of the GNU General Public License as published by
@@ -21,7 +21,18 @@ end
 ----------------------------------------
 -- Types
 
+type Promise<T> = {
+    poll: (Promise<T>) -> (boolean | nil, T),
+    await: (Promise<T>) -> T
+}
+
+type Bytes = {
+    as_table: (Bytes) -> { number },
+    as_string: (Bytes) -> string
+}
+
 type Semver = { major: number, minor: number, patch: number }
+
 type Edition = "global" | "china"
 
 type RawGameInfo = {
@@ -173,26 +184,55 @@ local downloader_handle = downloader.create()
 ----------------------------------------
 -- Util functions
 
-local function calc_file_md5(path: string): string
-    return str.encode(hash.digitize_file("md5", path), "hex")
+local function calc_file_md5(path: string): Promise<string>
+    local file_hash = hash.digitize_file("md5", path)
+
+    return task.create(function()
+        local status, result = file_hash:poll()
+
+        if not status then
+            return false, nil
+        else
+            return true, str.encode(result, "hex")
+        end
+    end)
 end
 
 ----------------------------------------
 -- Sophon
 
+local function __default_sophon_asset(): SophonAsset
+    return {
+        name = "",
+        size = 0,
+        hash_md5 = "",
+        chunks = {}
+    }
+end
+
+local function __default_sophon_chunk(): SophonChunk
+    return {
+        name = "",
+        offset = 0,
+        compressed_size = 0,
+        uncompressed_size = 0,
+        compressed_hash_md5 = "",
+        uncompressed_hash_md5 = ""
+    }
+end
+
 local function parse_sophon_manifest(manifest: string): { SophonAsset }
     local assets: { SophonAsset } = {}
-    local asset: SophonAsset = {} :: SophonAsset
-    local chunk: SophonChunk = {} :: SophonChunk
+
+    local asset: SophonAsset = __default_sophon_asset()
+    local chunk: SophonChunk = __default_sophon_chunk()
 
     for _, line in manifest:split("\n") do
-        dbg(line)
-
         if line == "}" then
             table.insert(assets, asset :: SophonAsset)
 
-            asset = {} :: SophonAsset
-            chunk = {} :: SophonChunk
+            asset = __default_sophon_asset()
+            chunk = __default_sophon_chunk()
         elseif line:sub(0, 6) == "  name" then
             asset.name = line:sub(10, -2)
         elseif line:sub(0, 6) == "  size" then
@@ -218,11 +258,11 @@ local function parse_sophon_manifest(manifest: string): { SophonAsset }
                 table.insert(asset.chunks, chunk)
             end
 
-            chunk = {} :: SophonChunk
+            chunk = __default_sophon_chunk()
         end
     end
 
-    return assets :: { SophonAsset }
+    return assets
 end
 
 local function decode_sophon_manifest(path: string): { SophonAsset }
@@ -231,17 +271,19 @@ local function decode_sophon_manifest(path: string): { SophonAsset }
     if not __protobuf_installed then
         __protobuf_installed = true
 
-        protobuf.install(current_platform)
+        if not protobuf.is_installed(current_platform) then
+            protobuf.install(current_platform)
+        end
     end
 
     if not __sophon_manifest_protobuf_copied then
         __sophon_manifest_protobuf_copied = true
 
         if fs.exists(sophon_manifest_protobuf) then
-            fs.remove(sophon_manifest_protobuf)
+            fs.remove(sophon_manifest_protobuf):await()
         end
 
-        fs.copy(sophon_manifest_protobuf_src, sophon_manifest_protobuf)
+        fs.copy(sophon_manifest_protobuf_src, sophon_manifest_protobuf):await()
     end
 
     local manifest = protobuf.decode(current_platform, {
@@ -265,7 +307,7 @@ local function fetch_sophon_api(edition: Edition, raw_game_info: RawGameInfo): S
 
     local iter, semver = import("iterable", "semver")
 
-    local response = net.fetch(`{api_info[edition].sophon_api_url}/downloader/sophon_chunk/api/getBuild?branch={raw_game_info.main.branch}&package_id={raw_game_info.main.package_id}&password={raw_game_info.main.password}`)
+    local response = http.fetch(`{api_info[edition].sophon_api_url}/downloader/sophon_chunk/api/getBuild?branch={raw_game_info.main.branch}&package_id={raw_game_info.main.package_id}&password={raw_game_info.main.password}`):await()
 
     if not response.is_ok then
         error(`failed to fetch sophon API for game '{raw_game_info.game.biz}'`)
@@ -290,16 +332,16 @@ local function fetch_sophon_api(edition: Edition, raw_game_info: RawGameInfo): S
                         local manifest_path: string = path.join(sophon_manifests_folder, sophon_info.manifest.id)
                         local cache_path: string = path.join(sophon_manifests_cache_folder, sophon_info.manifest.checksum)
 
-                        if fs.exists(manifest_path) and calc_file_md5(manifest_path) == sophon_info.manifest.checksum then
+                        if fs.exists(manifest_path) and calc_file_md5(manifest_path):await() == sophon_info.manifest.checksum then
                             if fs.exists(cache_path) then
-                                local manifest = fs.read_file(cache_path)
+                                local manifest = fs.read_file(cache_path):await()
 
                                 return str.decode(str.from_bytes(manifest), "json")
                             end
 
                             local manifest = decode_sophon_manifest(manifest_path)
 
-                            fs.write_file(cache_path, str.encode(manifest, "json"))
+                            fs.write_file(cache_path, str.encode(manifest, "json")):await()
 
                             return manifest
                         end
@@ -320,20 +362,60 @@ local function fetch_sophon_api(edition: Edition, raw_game_info: RawGameInfo): S
                         downloader.wait(task)
 
                         if sophon_info.manifest_download.compression then
-                            local manifest_content = fs.read_file(manifest_path)
+                            local manifest_input_file = fs.open(manifest_path, { read = true })
 
-                            manifest_content = compression.decompress("zstd", manifest_content)
+                            local manifest_output_file = fs.open(`{manifest_path}.decompressed`, {
+                                write = true,
+                                create = true,
+                                overwrite = true
+                            })
 
-                            fs.write_file(manifest_path, manifest_content)
+                            local decompressor = compression.decompressor("zstd")
+
+                            while true do
+                                local chunk = fs.read(manifest_input_file)
+
+                                if not chunk then
+                                    break
+                                end
+
+                                compression.write(decompressor, chunk)
+
+                                local chunk = compression.read(decompressor)
+
+                                if chunk then
+                                    fs.write(manifest_output_file, chunk)
+                                end
+                            end
+
+                            compression.finish(decompressor)
+
+                            while true do
+                                local chunk = compression.read(decompressor)
+
+                                if not chunk then
+                                    break
+                                end
+
+                                fs.write(manifest_output_file, chunk)
+                            end
+
+                            compression.close(decompressor)
+
+                            fs.close(manifest_input_file)
+                            fs.close(manifest_output_file)
+
+                            fs.remove(manifest_path):await()
+                            fs.move(`{manifest_path}.decompressed`, manifest_path):await()
                         end
 
-                        if calc_file_md5(manifest_path) ~= sophon_info.manifest.checksum then
+                        if calc_file_md5(manifest_path):await() ~= sophon_info.manifest.checksum then
                             error(`downloaded manifest '{url}' to '{manifest_path}' has invalid hash`)
                         end
 
                         local manifest = decode_sophon_manifest(manifest_path)
 
-                        fs.write_file(cache_path, str.encode(manifest, "json"))
+                        fs.write_file(cache_path, str.encode(manifest, "json")):await()
 
                         return manifest
                     end
@@ -365,42 +447,51 @@ end
 ----------------------------------------
 -- Fetch games API
 
-local function fetch_games_api(edition: Edition): { GameInfo }
+local function fetch_games_api(edition: Edition): Promise<{ GameInfo }>
     if __games_api_cache[edition] then
-        return __games_api_cache[edition]
+        return task.create(clone(__games_api_cache[edition]))
     end
 
-    local iter, semver = import("iterable", "semver")
+    local request = http.fetch(`{api_info[edition].games_api_url}/hyp/hyp-connect/api/getGameBranches?launcher_id={api_info[edition].launcher_id}`)
 
-    local response = net.fetch(`{api_info[edition].games_api_url}/hyp/hyp-connect/api/getGameBranches?launcher_id={api_info[edition].launcher_id}`)
+    return task.create(function()
+        local status, response = request:poll()
 
-    if not response.is_ok then
-        error("failed to fetch games API")
-    end
+        if not status then
+            return false, nil
+        end
 
-    response = str.decode(str.from_bytes(response.body), "json")
+        local iter, semver = import("iterable", "semver")
 
-    __games_api_cache[edition] = iter(response.data.game_branches)
-        .map(function(game_info: RawGameInfo): GameInfo
-            return {
-                game_id = game_info.game.id,
-                game_biz = game_info.game.biz,
-                package_id = game_info.main.package_id,
-                branch = game_info.main.branch,
-                password = game_info.main.password,
-                version = semver(game_info.main.tag),
-                diff_versions = iter(game_info.main.diff_tags)
-                    .map(semver)
-                    .collect(),
+        if not response.is_ok then
+            error("failed to fetch games API")
+        end
 
-                fetch_sophon_info = function()
-                    return fetch_sophon_api(edition, game_info)
-                end
-            }
-        end)
-        .collect()
+        response = str.decode(str.from_bytes(response.body), "json")
 
-    return __games_api_cache[edition]
+        __games_api_cache[edition] = iter(response.data.game_branches)
+            .map(function(game_info: RawGameInfo): GameInfo
+                return {
+                    game_id = game_info.game.id,
+                    game_biz = game_info.game.biz,
+                    package_id = game_info.main.package_id,
+                    branch = game_info.main.branch,
+                    password = game_info.main.password,
+                    version = semver(game_info.main.tag),
+
+                    diff_versions = iter(game_info.main.diff_tags)
+                        .map(semver)
+                        .collect(),
+
+                    fetch_sophon_info = function()
+                        return fetch_sophon_api(edition, game_info)
+                    end
+                }
+            end)
+            .collect()
+
+        return true, clone(__games_api_cache[edition])
+    end)
 end
 
 return {
