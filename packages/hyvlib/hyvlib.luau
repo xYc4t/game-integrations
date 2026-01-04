@@ -80,11 +80,13 @@ type SophonManifestInfo = {
         compressed: boolean,
         download: (platform: Platform, updater: (current: number, total: number) -> ()) -> Promise<{ SophonAsset }>
     },
-    stats: {
+    chunks: {
         compressed_size: string,
         uncompressed_size: string,
         file_count: string,
-        chunk_count: string
+        chunk_count: string,
+        download_url: string,
+        compressed: boolean
     }
 }
 
@@ -190,9 +192,11 @@ local function fetch_games_api(edition: Edition): Promise<{ GameInfo }>
 end
 
 return function()
+    local sophon = import("sophon")
+
     local game_info = fetch_games_api("global"):await()[1]
     local sophon_info = game_info.fetch_sophon_info():await()
-    local manifest_info = sophon_info.manifests[1]
+    local manifest_info = sophon_info.manifests[2]
 
     dbg(manifest_info)
 
@@ -204,6 +208,32 @@ return function()
     ):await()
 
     dbg(assets)
+
+    for _, asset in ipairs(assets) do
+        print(`processing asset '{asset.name}' ({asset.size / 1024} KiB)`)
+
+        for _, chunk in ipairs(asset.chunks) do
+            print(`  downloading chunk '{chunk.name}' ({chunk.uncompressed.size / 1024} KiB)`)
+
+            print(`{manifest_info.chunks.download_url}/{chunk.name}`)
+
+            local chunk = {
+                name = chunk.name,
+                md5_checksum = chunk.uncompressed.md5_checksum,
+                download_url = `{manifest_info.chunks.download_url}/{chunk.name}`
+            }
+
+            local chunk_path = sophon.download_chunk(
+                chunk,
+                "x86_64-linux",
+                function(current: number, total: number)
+                    print(`    download progress: {current / total * 100}%`)
+                end
+            ):await()
+
+            print(`  chunk path: {chunk_path}`)
+        end
+    end
 end
 
 -- return {

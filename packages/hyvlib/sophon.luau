@@ -44,6 +44,12 @@ type GameInfo = {
     password: string
 }
 
+type RawSophonInfo = {
+    tag: string,
+    build_id: string,
+    manifests: { RawSophonManifestInfo }
+}
+
 type RawSophonManifestInfo = {
     category_id: string,
     category_name: string,
@@ -82,12 +88,6 @@ type RawSophonManifestInfo = {
     }
 }
 
-type RawSophonInfo = {
-    tag: string,
-    build_id: string,
-    manifests: { RawSophonManifestInfo }
-}
-
 type SophonInfo = {
     version: Semver,
     build_id: string,
@@ -107,11 +107,13 @@ type SophonManifestInfo = {
         compressed: boolean,
         download: (platform: Platform, updater: (current: number, total: number) -> ()) -> Promise<{ SophonAsset }>
     },
-    stats: {
+    chunks: {
         compressed_size: string,
         uncompressed_size: string,
         file_count: string,
-        chunk_count: string
+        chunk_count: string,
+        download_url: string,
+        compressed: boolean
     }
 }
 
@@ -137,11 +139,15 @@ type SophonChunk = {
 
 type SophonDownloadManifestInfo = {
     id: string,
-    compressed_size: string,
-    uncompressed_size: string,
-    md5_checksum: string,
-    download_url: string,
+    md5_checksum: string, -- uncompressed protobuf manifest file md5 hash
+    download_url: string, -- full URL to download the protobuf manifest
     compressed: boolean
+}
+
+type SophonDownloadChunkInfo = {
+    name: string,
+    md5_checksum: string, -- uncompressed chunk file md5 hash
+    download_url: string -- full URL to download the chunk
 }
 
 ----------------------------------------
@@ -155,10 +161,11 @@ local sophon_chunks_folder: string          = path.join(temp_folder, "chunks")
 
 local sophon_manifest_protobuf: string = path.join(temp_folder, "manifest.proto")
 
-local downloader_handle = downloader.create()
+local downloader_handle: number = downloader.create()
+local downloader_update_interval: number = 150
 
 ----------------------------------------
--- Manifest downloading
+-- Utility
 
 local function calc_file_md5(path: string): Promise<string>
     local file_hash = hash.digitize_file("md5", path)
@@ -255,6 +262,132 @@ local function decompress_file(path: string): Promise<any>
         end
     end)
 end
+
+----------------------------------------
+-- Chunk downloading
+
+-- Download sophon chunk and return path to it.
+local function download_sophon_chunk(
+    chunk: SophonDownloadChunkInfo,
+    platform: Platform,
+    updater: (current: number, total: number) -> ()
+): Promise<string>
+    local chunk_path: string = path.join(sophon_chunks_folder, chunk.name)
+
+    type State =
+        | { branch: "none" }
+        | { branch: "check_chunk_hash", promise: Promise<string>, redownload: boolean }
+        | { branch: "download_chunk", handle: number }
+        | { branch: "decompress_chunk", promise: Promise<any> }
+
+    local state: State = { branch = "none" }
+
+    return task.create(function(): (boolean | nil, string | nil)
+        -- If we didn't do anything yet.
+        if state.branch == "none" then
+            -- If chunk is already downloaded then check its hash.
+            if fs.exists(chunk_path) then
+                state = {
+                    branch = "check_chunk_hash",
+                    promise = calc_file_md5(chunk_path),
+                    redownload = true -- allow chunk redownloading
+                }
+
+            -- Otherwise start downloading it.
+            else
+                state = {
+                    branch = "download_chunk",
+                    handle = downloader.download(downloader_handle, {
+                        url = chunk.download_url,
+                        output_file = chunk_path,
+                        continue_download = false
+                    })
+                }
+            end
+
+            return false, nil
+
+        -- If we're checking the chunk hash.
+        elseif state.branch == "check_chunk_hash" then
+            local status, hash = state.promise:poll()
+
+            -- If we've finished calculating the chunk hash.
+            if status == true then
+                -- If hash matched - return path to the downloaded chunk.
+                if hash == chunk.md5_checksum then
+                    return true, chunk_path
+
+                -- Otherwise if downloaded chunk's hash mismatched.
+                else
+                    -- Delete the wrong file to not to compare its hash if the
+                    -- function will be stopped and restarted.
+                    fs.remove_file(chunk_path):await()
+
+                    -- If chunk redownloading is forbidden then throw an error.
+                    if not state.redownload then
+                        error(`downloaded sophon chunk has invalid hash: '{chunk.md5_checksum}' expected, got '{hash}'; download url: '{chunk.download_url}'`)
+                    end
+
+                    state = {
+                        branch = "download_chunk",
+                        handle = downloader.download(downloader_handle, {
+                            url = chunk.download_url,
+                            output_file = chunk_path,
+                            continue_download = false
+                        })
+                    }
+                end
+            end
+
+            return false, nil
+
+        -- If we're downloading the chunk.
+        elseif state.branch == "download_chunk" then
+            local progress = downloader.progress(state.handle) :: { current: number, total: number, finished: boolean }
+
+            updater(progress.current, progress.total)
+
+            -- If downloading finished then check downloaded chunk hash.
+            if progress.finished then
+                -- Wait for downloading finish even though the progress
+                -- reports that it's already finished. Some data might not be
+                -- written to disk still.
+                downloader.wait(state.handle)
+
+                -- Decompress the chunk.
+                state = {
+                    branch = "decompress_chunk",
+                    promise = decompress_file(chunk_path)
+                }
+            end
+
+            -- Sleep for a short duration of time between downloader updates.
+            sleep(downloader_update_interval)
+
+            return false, nil
+
+        -- If we're decompressing the chunk.
+        elseif state.branch == "decompress_chunk" then
+            -- If we've finished decompressing the chunk - then check its hash.
+            if state.promise:poll() == true then
+                state = {
+                    branch = "check_chunk_hash",
+                    promise = calc_file_md5(chunk_path),
+                    redownload = false -- do not allow redownloading the chunk
+                }
+            end
+
+            return false, nil
+
+        -- Should be unreachable.
+        else
+            error("FIXME: unreachable download_sophon_chunk branch")
+        end
+    end)
+end
+
+----------------------------------------
+-- Manifest downloading and decoding
 
 local function parse_sophon_protobuf_manifest(manifest: string): { SophonAsset }
     local function get_default_sophon_asset(): SophonAsset
@@ -360,6 +493,8 @@ local function decode_sophon_protobuf_manifest(path: string, platform: Platform)
     end)
 end
 
+-- Download sophon protobuf manifest to a temporary folder and return its
+-- decoded content.
 local function download_sophon_manifest(
     manifest: SophonDownloadManifestInfo,
     platform: Platform,
@@ -446,9 +581,9 @@ local function download_sophon_manifest(
                     fs.remove_file(protobuf_manifest_path):await()
 
                     -- If manifest redownloading is forbidden then throw an
-                    -- error
+                    -- error.
                     if not state.redownload then
-                        error(`sophon protobuf manifest has invalid hash: '{manifest.md5_checksum}' expected, got '{hash}'; download url: '{manifest.download_url}'`)
+                        error(`downloaded sophon protobuf manifest has invalid hash: '{manifest.md5_checksum}' expected, got '{hash}'; download url: '{manifest.download_url}'`)
                     end
 
                     state = {
@@ -525,7 +660,7 @@ local function download_sophon_manifest(
             end
 
             -- Sleep for a short duration of time between downloader updates.
-            sleep(50)
+            sleep(downloader_update_interval)
 
             return false, nil
 
@@ -585,10 +720,11 @@ local function fetch_sophon_api(
 
         local manifests = iter(response.data.manifests)
             .map(function(sophon_info: RawSophonManifestInfo): SophonManifestInfo
-                local download_url = `{sophon_info.manifest_download.url_prefix}/{sophon_info.manifest.id}`
+                local manifest_download_url = `{sophon_info.manifest_download.url_prefix}/{sophon_info.manifest.id}`
+                local chunks_download_url = sophon_info.chunk_download.url_prefix
 
-                if sophon_info.manifest_download.url_suffix then
-                    download_url = `{download_url}?{sophon_info.manifest_download.url_suffix}`
+                if #sophon_info.manifest_download.url_suffix > 0 then
+                    manifest_download_url = `{manifest_download_url}?{sophon_info.manifest_download.url_suffix}`
                 end
 
                 return {
@@ -600,27 +736,27 @@ local function fetch_sophon_api(
                         compressed_size = sophon_info.manifest.compressed_size,
                         uncompressed_size = sophon_info.manifest.uncompressed_size,
                         md5_checksum = sophon_info.manifest.checksum,
-                        download_url = download_url,
+                        download_url = manifest_download_url,
                         compressed = sophon_info.manifest_download.compression,
 
                         download = function(platform: Platform, updater: (current: number, total: number) -> ()): Promise<{ SophonAsset }>
                             local manifest = {
                                 id = sophon_info.manifest.id,
-                                compressed_size = sophon_info.manifest.compressed_size,
-                                uncompressed_size = sophon_info.manifest.uncompressed_size,
                                 md5_checksum = sophon_info.manifest.checksum,
-                                download_url = download_url,
+                                download_url = manifest_download_url,
                                 compressed = sophon_info.manifest_download.compression
                             }
 
                             return download_sophon_manifest(manifest, platform, updater)
                         end
                     },
-                    stats = {
+                    chunks = {
                         compressed_size = sophon_info.stats.compressed_size,
                         uncompressed_size = sophon_info.stats.uncompressed_size,
                         file_count = sophon_info.stats.file_count,
-                        chunk_count = sophon_info.stats.chunk_count
+                        chunk_count = sophon_info.stats.chunk_count,
+                        download_url = chunks_download_url,
+                        compressed = sophon_info.chunk_download.compression
                     }
                 }
             end)
@@ -638,5 +774,6 @@ end
 
 return {
     download_manifest = download_sophon_manifest,
+    download_chunk = download_sophon_chunk,
     fetch_api = fetch_sophon_api
 }
