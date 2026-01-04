@@ -34,6 +34,7 @@ type Bytes = {
 type Semver = { major: number, minor: number, patch: number }
 
 type Edition = "global" | "china"
+type Platform = "x86_64-linux"
 
 type RawGameInfo = {
     game: {
@@ -57,51 +58,13 @@ type GameInfo = {
     password: string,
     version: Semver,
     diff_versions: { Semver },
-    fetch_sophon_info: () -> SophonInfo
+    fetch_sophon_info: () -> Promise<SophonInfo>
 }
 
-type RawSophonManifestInfo = {
-    category_id: string,
-    category_name: string,
-    matching_field: string,
-    manifest: {
-        id: string,
-        compressed_size: string,
-        uncompressed_size: string,
-        checksum: string
-    },
-    manifest_download: {
-        url_prefix: string,
-        url_suffix: string,
-        compression: boolean,
-        encryption: boolean,
-        password: string
-    },
-    chunk_download: {
-        url_prefix: string,
-        url_suffix: string,
-        compression: boolean,
-        encryption: boolean,
-        password: string
-    },
-    stats: {
-        compressed_size: string,
-        uncompressed_size: string,
-        file_count: string,
-        chunk_count: string
-    },
-    deduplicated_stats: {
-        compressed_size: string,
-        uncompressed_size: string,
-        file_count: string,
-        chunk_count: string
-    }
-}
-
-type RawSophonInfo = {
-    tag: string,
+type SophonInfo = {
+    version: Semver,
     build_id: string,
-    manifests: { RawSophonManifestInfo }
+    manifests: { SophonManifestInfo }
 }
 
 type SophonManifestInfo = {
@@ -113,37 +76,36 @@ type SophonManifestInfo = {
         compressed_size: string,
         uncompressed_size: string,
         md5_checksum: string,
-        fetch: (updater: ((current: number, total: number) -> ()) | nil) -> { SophonAsset }
+        download_url: string,
+        compressed: boolean,
+        download: (platform: Platform, updater: (current: number, total: number) -> ()) -> Promise<{ SophonAsset }>
     },
-    chunk: {
+    stats: {
         compressed_size: string,
         uncompressed_size: string,
         file_count: string,
-        chunk_count: string,
-        fetch: (updater: ((current: number, total: number) -> ()) | nil) -> ()
+        chunk_count: string
     }
-}
-
-type SophonInfo = {
-    version: Semver,
-    build_id: string,
-    manifests: { SophonManifestInfo }
 }
 
 type SophonAsset = {
     name: string,
     size: number,
-    hash_md5: string,
+    md5_checksum: string,
     chunks: { SophonChunk }
 }
 
 type SophonChunk = {
     name: string,
     offset: number,
-    compressed_size: number,
-    uncompressed_size: number,
-    compressed_hash_md5: string,
-    uncompressed_hash_md5: string
+    compressed: {
+        size: number,
+        md5_checksum: string
+    },
+    uncompressed: {
+        size: number,
+        md5_checksum: string
+    }
 }
 
 ----------------------------------------
@@ -163,295 +125,10 @@ local api_info = {
     }
 }
 
-local current_platform: string = "x86_64-linux" -- make it an argument somewhere
-
-local temp_folder: string = path.join(path.temp_dir(), "hyvlib")
-
-local sophon_manifests_folder: string       = path.join(temp_folder, "manifests")
-local sophon_manifests_cache_folder: string = path.join(temp_folder, "manifests_cache")
-local sophon_chunks_folder: string          = path.join(temp_folder, "chunks")
-
-local sophon_manifest_protobuf: string = path.join(temp_folder, "manifest.proto")
-
-local __games_api_cache: {  [Edition]: { GameInfo } } = {}
-local __sophon_api_cache: { [string]: SophonInfo } = {}
-
-local __protobuf_installed = false
-local __sophon_manifest_protobuf_copied = false
-
-local downloader_handle = downloader.create()
-
-----------------------------------------
--- Util functions
-
-local function calc_file_md5(path: string): Promise<string>
-    local file_hash = hash.digitize_file("md5", path)
-
-    return task.create(function()
-        local status, result = file_hash:poll()
-
-        if not status then
-            return false, nil
-        else
-            return true, str.encode("hex", result)
-        end
-    end)
-end
-
-----------------------------------------
--- Sophon
-
-local function __default_sophon_asset(): SophonAsset
-    return {
-        name = "",
-        size = 0,
-        hash_md5 = "",
-        chunks = {}
-    }
-end
-
-local function __default_sophon_chunk(): SophonChunk
-    return {
-        name = "",
-        offset = 0,
-        compressed_size = 0,
-        uncompressed_size = 0,
-        compressed_hash_md5 = "",
-        uncompressed_hash_md5 = ""
-    }
-end
-
-local function parse_sophon_manifest(manifest: string): { SophonAsset }
-    local assets: { SophonAsset } = {}
-
-    local asset: SophonAsset = __default_sophon_asset()
-    local chunk: SophonChunk = __default_sophon_chunk()
-
-    for _, line in manifest:split("\n") do
-        if line == "}" then
-            table.insert(assets, asset :: SophonAsset)
-
-            asset = __default_sophon_asset()
-            chunk = __default_sophon_chunk()
-        elseif line:sub(0, 6) == "  name" then
-            asset.name = line:sub(10, -2)
-        elseif line:sub(0, 6) == "  size" then
-            asset.size = tonumber(line:sub(9)) :: number
-        elseif line:sub(0, 10) == "  hash_md5" then
-            asset.hash_md5 = line:sub(14, -2)
-        elseif line:sub(0, 8) == "    name" then
-            chunk.name = line:sub(12, -2)
-        elseif line:sub(0, 15) == "    file_offset" then
-            chunk.offset = tonumber(line:sub(17)) :: number
-        elseif line:sub(0, 23) == "    compressed_hash_md5" then
-            chunk.compressed_hash_md5 = line:sub(27, -2)
-        elseif line:sub(0, 25) == "    uncompressed_hash_md5" then
-            chunk.uncompressed_hash_md5 = line:sub(29, -2)
-        elseif line:sub(0, 19) == "    compressed_size" then
-            chunk.compressed_size = tonumber(line:sub(22)) :: number
-        elseif line:sub(0, 21) == "    uncompressed_size" then
-            chunk.uncompressed_size = tonumber(line:sub(24)) :: number
-        elseif line:sub(0, 3) == "  }" then
-            if not asset.chunks then
-                asset.chunks = { chunk }
-            else
-                table.insert(asset.chunks, chunk)
-            end
-
-            chunk = __default_sophon_chunk()
-        end
-    end
-
-    return assets
-end
-
-local function decode_sophon_manifest(path: string): { SophonAsset }
-    local protobuf, sophon_manifest_protobuf_src = import("protobuf", "sophon-manifest-protobuf")
-
-    if not __protobuf_installed then
-        __protobuf_installed = true
-
-        if not protobuf.is_installed(current_platform) then
-            protobuf.install(current_platform)
-        end
-    end
-
-    if not __sophon_manifest_protobuf_copied then
-        __sophon_manifest_protobuf_copied = true
-
-        if fs.exists(sophon_manifest_protobuf) then
-            fs.remove(sophon_manifest_protobuf):await()
-        end
-
-        fs.copy(sophon_manifest_protobuf_src, sophon_manifest_protobuf):await()
-    end
-
-    local manifest = protobuf.decode(current_platform, {
-        protobuf = sophon_manifest_protobuf,
-        type = "sophon.Manifest",
-        input = path
-    })
-
-    return parse_sophon_manifest(manifest)
-end
-
-----------------------------------------
--- Fetch sophon API
-
-local function fetch_sophon_api(edition: Edition, raw_game_info: RawGameInfo): SophonInfo
-    local index = `{edition}-{raw_game_info.game.id}`
-
-    if __sophon_api_cache[index] then
-        return __sophon_api_cache[index]
-    end
-
-    local iter, semver = import("iterable", "semver")
-
-    local response = http.fetch(`{api_info[edition].sophon_api_url}/downloader/sophon_chunk/api/getBuild?branch={raw_game_info.main.branch}&package_id={raw_game_info.main.package_id}&password={raw_game_info.main.password}`):await()
-
-    if not response.is_ok then
-        error(`failed to fetch sophon API for game '{raw_game_info.game.biz}'`)
-    end
-
-    response = str.decode("json", str.from_bytes(response.body))
-
-    local manifests = iter(response.data.manifests)
-        .map(function(sophon_info: RawSophonManifestInfo): SophonManifestInfo
-            return {
-                category_id = sophon_info.category_id,
-                category_name = sophon_info.category_name,
-                matching_field = sophon_info.matching_field,
-
-                manifest = {
-                    id = sophon_info.manifest.id,
-                    compressed_size = sophon_info.manifest.compressed_size,
-                    uncompressed_size = sophon_info.manifest.uncompressed_size,
-                    md5_checksum = sophon_info.manifest.checksum,
-
-                    fetch = function(updater: ((current: number, total: number) -> ()) | nil): { SophonAsset }
-                        local manifest_path: string = path.join(sophon_manifests_folder, sophon_info.manifest.id)
-                        local cache_path: string = path.join(sophon_manifests_cache_folder, sophon_info.manifest.checksum)
-
-                        if fs.exists(manifest_path) and calc_file_md5(manifest_path):await() == sophon_info.manifest.checksum then
-                            if fs.exists(cache_path) then
-                                local manifest = fs.read_file(cache_path):await()
-
-                                return str.decode("bson", str.from_bytes(manifest)).assets
-                            end
-
-                            local manifest = decode_sophon_manifest(manifest_path)
-
-                            fs.write_file(
-                                cache_path,
-                                str.encode("bson", { assets = manifest })
-                            ):await()
-
-                            return manifest
-                        end
-
-                        local url = `{sophon_info.manifest_download.url_prefix}{sophon_info.manifest_download.url_suffix}/{sophon_info.manifest.id}`
-
-                        local task = downloader.download(downloader_handle, {
-                            url = url,
-                            output_file = manifest_path,
-                            continue_download = false,
-                            on_update = function(current, total)
-                                if updater then
-                                    updater(current, total)
-                                end
-                            end
-                        })
-
-                        downloader.wait(task)
-
-                        if sophon_info.manifest_download.compression then
-                            local manifest_input_file = fs.open(manifest_path, { read = true })
-
-                            local manifest_output_file = fs.open(`{manifest_path}.decompressed`, {
-                                write = true,
-                                create = true,
-                                overwrite = true
-                            })
-
-                            local decompressor = compression.decompressor("zstd")
-
-                            while true do
-                                local chunk = fs.read(manifest_input_file)
-
-                                if not chunk then
-                                    break
-                                end
-
-                                compression.write(decompressor, chunk)
-
-                                local chunk = compression.read(decompressor)
-
-                                if chunk then
-                                    fs.write(manifest_output_file, chunk)
-                                end
-                            end
-
-                            compression.finish(decompressor)
-
-                            while true do
-                                local chunk = compression.read(decompressor)
-
-                                if not chunk then
-                                    break
-                                end
-
-                                fs.write(manifest_output_file, chunk)
-                            end
-
-                            compression.close(decompressor)
-
-                            fs.close(manifest_input_file)
-                            fs.close(manifest_output_file)
-
-                            fs.remove(manifest_path):await()
-                            fs.move(`{manifest_path}.decompressed`, manifest_path):await()
-                        end
-
-                        if calc_file_md5(manifest_path):await() ~= sophon_info.manifest.checksum then
-                            error(`downloaded manifest '{url}' to '{manifest_path}' has invalid hash`)
-                        end
-
-                        local manifest = decode_sophon_manifest(manifest_path)
-
-                        fs.write_file(
-                            cache_path,
-                            str.encode("bson", { assets = manifest })
-                        ):await()
-
-                        return manifest
-                    end
-                },
-
-                chunk = {
-                    compressed_size = sophon_info.stats.compressed_size,
-                    uncompressed_size = sophon_info.stats.uncompressed_size,
-                    file_count = sophon_info.stats.file_count,
-                    chunk_count = sophon_info.stats.chunk_count,
-
-                    fetch = function(updater: ((current: number, total: number) -> ()) | nil)
-
-                    end
-                }
-            }
-        end)
-        .collect()
-
-    __sophon_api_cache[index] = {
-        version = semver(response.data.tag),
-        build_id = response.data.build_id,
-        manifests = manifests
-    }
-
-    return __sophon_api_cache[index]
-end
-
 ----------------------------------------
 -- Fetch games API
+
+local __games_api_cache: {  [Edition]: { GameInfo } } = {}
 
 local function fetch_games_api(edition: Edition): Promise<{ GameInfo }>
     if __games_api_cache[edition] then
@@ -467,13 +144,13 @@ local function fetch_games_api(edition: Edition): Promise<{ GameInfo }>
             return false, nil
         end
 
-        local iter, semver = import("iterable", "semver")
-
         if not response.is_ok then
             error("failed to fetch games API")
         end
 
         response = str.decode("json", str.from_bytes(response.body))
+
+        local iter, semver, sophon = import("iterable", "semver", "sophon")
 
         __games_api_cache[edition] = iter(response.data.game_branches)
             .map(function(game_info: RawGameInfo): GameInfo
@@ -490,7 +167,19 @@ local function fetch_games_api(edition: Edition): Promise<{ GameInfo }>
                         .collect(),
 
                     fetch_sophon_info = function()
-                        return fetch_sophon_api(edition, game_info)
+                        local game_info = {
+                            game_id = game_info.game.id,
+                            game_biz = game_info.game.biz,
+                            package_id = game_info.main.package_id,
+                            branch = game_info.main.branch,
+                            password = game_info.main.password
+                        }
+
+                        return sophon.fetch_api(
+                            api_info[edition].sophon_api_url,
+                            game_info,
+                            edition
+                        )
                     end
                 }
             end)
@@ -500,6 +189,23 @@ local function fetch_games_api(edition: Edition): Promise<{ GameInfo }>
     end)
 end
 
-return {
-    fetch_games_api = fetch_games_api
-}
+return function()
+    local game_info = fetch_games_api("global"):await()[1]
+    local sophon_info = game_info.fetch_sophon_info():await()
+    local manifest_info = sophon_info.manifests[1]
+
+    dbg(manifest_info)
+
+    local assets = manifest_info.manifest.download(
+        "x86_64-linux",
+        function(current: number, total: number)
+            dbg(`download progress: {current / total * 100}%`)
+        end
+    ):await()
+
+    dbg(assets)
+end
+
+-- return {
+--     fetch_games_api = fetch_games_api
+-- }

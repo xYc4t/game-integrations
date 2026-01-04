@@ -23,7 +23,7 @@ message Asset {
     uint64 size = 4;
 
     // MD5 checksum of the entire file.
-    string hash_md5 = 5;
+    string md5_checksum = 5;
 }
 
 message Chunk {
@@ -31,7 +31,7 @@ message Chunk {
     string name = 1;
 
     // MD5 checksum of the uncompressed chunk data.
-    string uncompressed_hash_md5 = 2;
+    string uncompressed_md5_checksum = 2;
 
     // Offset at which this chunk should be put into the resulting file.
     uint64 file_offset = 3;
@@ -46,5 +46,5 @@ message Chunk {
     uint64 _reserved = 6;
 
     // MD5 checksum of the compressed chunk data.
-    string compressed_hash_md5 = 7;
+    string compressed_md5_checksum = 7;
 }
