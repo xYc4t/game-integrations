@@ -193,7 +193,7 @@ local function calc_file_md5(path: string): Promise<string>
         if not status then
             return false, nil
         else
-            return true, str.encode(result, "hex")
+            return true, str.encode("hex", result)
         end
     end)
 end
@@ -313,7 +313,7 @@ local function fetch_sophon_api(edition: Edition, raw_game_info: RawGameInfo): S
         error(`failed to fetch sophon API for game '{raw_game_info.game.biz}'`)
     end
 
-    response = str.decode(str.from_bytes(response.body), "json")
+    response = str.decode("json", str.from_bytes(response.body))
 
     local manifests = iter(response.data.manifests)
         .map(function(sophon_info: RawSophonManifestInfo): SophonManifestInfo
@@ -336,12 +336,15 @@ local function fetch_sophon_api(edition: Edition, raw_game_info: RawGameInfo): S
                             if fs.exists(cache_path) then
                                 local manifest = fs.read_file(cache_path):await()
 
-                                return str.decode(str.from_bytes(manifest), "json")
+                                return str.decode("bson", str.from_bytes(manifest)).assets
                             end
 
                             local manifest = decode_sophon_manifest(manifest_path)
 
-                            fs.write_file(cache_path, str.encode(manifest, "json")):await()
+                            fs.write_file(
+                                cache_path,
+                                str.encode("bson", { assets = manifest })
+                            ):await()
 
                             return manifest
                         end
@@ -415,7 +418,10 @@ local function fetch_sophon_api(edition: Edition, raw_game_info: RawGameInfo): S
 
                         local manifest = decode_sophon_manifest(manifest_path)
 
-                        fs.write_file(cache_path, str.encode(manifest, "json")):await()
+                        fs.write_file(
+                            cache_path,
+                            str.encode("bson", { assets = manifest })
+                        ):await()
 
                         return manifest
                     end
@@ -467,7 +473,7 @@ local function fetch_games_api(edition: Edition): Promise<{ GameInfo }>
             error("failed to fetch games API")
         end
 
-        response = str.decode(str.from_bytes(response.body), "json")
+        response = str.decode("json", str.from_bytes(response.body))
 
         __games_api_cache[edition] = iter(response.data.game_branches)
             .map(function(game_info: RawGameInfo): GameInfo
