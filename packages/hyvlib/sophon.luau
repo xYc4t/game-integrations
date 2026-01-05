@@ -150,6 +150,15 @@ type SophonDownloadChunkInfo = {
     download_url: string -- full URL to download the chunk
 }
 
+type SophonDownloadAssetInfo = {
+    name: string,
+    md5_checksum: string, -- complete asset md5 hash
+    chunks: {{
+        chunk: SophonDownloadChunkInfo, -- chunk download info
+        offset: number -- chunk's offset within the asset
+    }}
+}
+
 ----------------------------------------
 -- Constants
 
@@ -181,7 +190,7 @@ local function calc_file_md5(path: string): Promise<string>
     end)
 end
 
-local function decompress_file(path: string): Promise<any>
+local function decompress_file(path: string): Promise<nil>
     local input_file = fs.open(path, { read = true })
 
     local output_file = fs.open(`{path}.decompressed`, {
@@ -265,6 +274,7 @@ end
 
 ----------------------------------------
 -- Chunk downloading
+-- TODO: consider not decompressing the chunks to save up some disk space
 
 -- Download sophon chunk and return path to it.
 local function download_sophon_chunk(
@@ -272,6 +282,18 @@ local function download_sophon_chunk(
     platform: Platform,
     updater: (current: number, total: number) -> ()
 ): Promise<string>
+    if not chunk.name then
+        error("download_sophon_chunk: 'chunk.name' is missing")
+    end
+
+    if not chunk.md5_checksum then
+        error("download_sophon_chunk: 'chunk.md5_checksum' is missing")
+    end
+
+    if not chunk.download_url then
+        error("download_sophon_chunk: 'chunk.download_url' is missing")
+    end
+
     local chunk_path: string = path.join(sophon_chunks_folder, chunk.name)
 
     type State =
@@ -325,7 +347,7 @@ local function download_sophon_chunk(
 
                     -- If chunk redownloading is forbidden then throw an error.
                     if not state.redownload then
-                        error(`downloaded sophon chunk has invalid hash: '{chunk.md5_checksum}' expected, got '{hash}'; download url: '{chunk.download_url}'`)
+                        error(`download_sophon_chunk: downloaded sophon chunk has invalid hash: '{chunk.md5_checksum}' expected, got '{hash}'; download url: '{chunk.download_url}'`)
                     end
 
                     state = {
@@ -352,7 +374,11 @@ local function download_sophon_chunk(
                 -- Wait for downloading finish even though the progress
                 -- reports that it's already finished. Some data might not be
                 -- written to disk still.
-                downloader.wait(state.handle)
+                local total = downloader.wait(state.handle)
+
+                -- Update the callback once again to send the latest downloaded
+                -- file size.
+                updater(total, total)
 
                 -- Decompress the chunk.
                 state = {
@@ -381,8 +407,222 @@ local function download_sophon_chunk(
 
         -- Should be unreachable.
         else
-            error("FIXME: unreachable download_sophon_chunk branch")
+            error("download_sophon_chunk: unreachable branch")
         end
+    end)
+end
+
+----------------------------------------
+-- Assets patching
+
+-- Patch base file with provided patch file at the given offset.
+local function patch_file(
+    base_handle: number,
+    patch_hadle: number,
+    offset: number
+): Promise<nil>
+    fs.seek(base_handle, offset)
+
+    return task.create(function()
+        local chunk = fs.read(patch_hadle)
+
+        if not chunk then
+            fs.flush(base_handle)
+
+            return true, nil
+        end
+
+        fs.write(base_handle, chunk)
+
+        return false, nil
+    end)
+end
+
+-- Patch sophon asset in the output folder.
+local function patch_sophon_asset(
+    output_folder: string,
+    asset: SophonDownloadAssetInfo,
+    platform: Platform,
+    updater: (current: number, total: number) -> ()
+): Promise<nil>
+    if not asset.chunks then
+        error("patch_sophon_asset: 'asset.chunks' is missing")
+    end
+
+    -- Open output asset file and create it if needed.
+    local asset_path = path.join(output_folder, asset.name)
+
+    local asset_file = fs.open(asset_path, {
+        write = true,
+        create = true
+    })
+
+    -- Create pool of promises to download sophon chunks used in the asset.
+    local chunks_download_pool = {} :: {{ promise: Promise<string> | nil, current: number, total: number, offset: number }}
+    local chunks_patching_pool = {} :: {{ promise: Promise<nil> | nil, handle: number }}
+
+    -- Iterate over all the asset's chunks.
+    for i, chunk_info in ipairs(asset.chunks) do
+        if not chunk_info.chunk then
+            error("download_sophon_chunk: 'asset.chunks[].chunk' is missing")
+        end
+
+        if chunk_info.offset == nil then
+            error("download_sophon_chunk: 'asset.chunks[].offset' is missing")
+        end
+
+        -- Schedule chunk downloading and put the promise into the pool.
+        local chunk: SophonDownloadChunkInfo = {
+            name = chunk_info.chunk.name,
+            md5_checksum = chunk_info.chunk.md5_checksum,
+            download_url = chunk_info.chunk.download_url
+        }
+
+        local promise = download_sophon_chunk(
+            chunk,
+            platform,
+            function(current: number, total: number)
+                chunks_download_pool[i].current = current
+                chunks_download_pool[i].total = total
+            end
+        )
+
+        table.insert(chunks_download_pool, {
+            promise = promise,
+            current = 0,
+            total = 0,
+            offset = chunk_info.offset
+        })
+    end
+
+    local downloading_finished = false
+    local patching_finished = false
+    local asset_checksum: Promise<string> | nil = nil
+
+    return task.create(function()
+        -- If downloading, patching and checksum verification finished then
+        -- resolve the promise.
+        if downloading_finished and patching_finished and not asset_checksum then
+            return true, nil
+        end
+
+        -- Calculate current and total progress of all the chunks downloading
+        -- and send them to the updater callback.
+        local current_progress = 0
+        local total_progress = 0
+
+        for _, download_info in ipairs(chunks_download_pool) do
+            current_progress += download_info.current
+            total_progress += download_info.total
+        end
+
+        updater(current_progress, total_progress)
+
+        -- If downloading is not finished yet.
+        if not downloading_finished then
+            local has_unresolved_promises = false
+
+            -- Iterate over the chunks downloading promises.
+            for i, download_info in ipairs(chunks_download_pool) do
+                -- If chunk is not downloaded yet (promise is not resolved) then
+                -- try to poll it.
+                if download_info.promise then
+                    local status, chunk_path = download_info.promise:poll()
+
+                    -- If promise has resolved then remove it from the pool and
+                    -- schedule asset file patching.
+                    if status then
+                        local chunk_file = fs.open(chunk_path)
+
+                        table.insert(chunks_patching_pool, {
+                            promise = patch_file(asset_file, chunk_file, download_info.offset),
+                            handle = chunk_file
+                        })
+
+                        -- Remove chunk downloading promise from the pool.
+                        chunks_download_pool[i].promise = nil
+                    else
+                        -- Remember that at least one promise is not resolved
+                        -- yet.
+                        has_unresolved_promises = true
+                    end
+                end
+            end
+
+            -- If there's no more unresolved promises then remember that we've
+            -- finished downloading all the chunks to not to iterate over their
+            -- pool once again.
+            downloading_finished = not has_unresolved_promises
+        end
+
+        -- If asset patching is not finished yet.
+        if not patching_finished then
+            local has_unresolved_promises = false
+
+            -- Iterate over the chunks patching promises.
+            for i, patch_info in ipairs(chunks_patching_pool) do
+                -- If chunk is not patched yet (promise is not resolved) then
+                -- try to poll it.
+                if patch_info.promise then
+                    if patch_info.promise:poll() then
+                        -- Close the chunk file handle.
+                        fs.close(chunks_patching_pool[i].handle)
+
+                        -- Remove chunk patching promise from the pool.
+                        chunks_patching_pool[i].promise = nil
+                    else
+                        -- Remember that at least one promise is not resolved
+                        -- yet.
+                        has_unresolved_promises = true
+                    end
+                end
+            end
+
+            -- Do not update the patching finished flag until chunks downloading
+            -- is finished because some chunks might not yet be downloaded to
+            -- be used in asset patching.
+            if downloading_finished then
+                -- If there's no more unresolved promises then remember that
+                -- we've finished patching all the chunks to not to iterate over
+                -- their pool once again.
+                patching_finished = not has_unresolved_promises
+
+                -- If we've finished patching the asset file then verify its
+                -- hash.
+                if patching_finished then
+                    -- Close the asset file and flush all the buffered data to
+                    -- disk.
+                    fs.close(asset_file)
+
+                    asset_checksum = calc_file_md5(asset_path)
+                end
+            end
+        end
+
+        -- If we're verifying the asset file's hash.
+        if asset_checksum then
+            -- Poll file hash calculation.
+            local status, hash = asset_checksum:poll()
+
+            -- If it's not finished yet - keep waiting.
+            if not status then
+                return false, nil
+            end
+
+            -- If hash is mismatched then return an error.
+            if hash ~= asset.md5_checksum then
+                error(`patch_sophon_asset: patched sophon asset has invalid hash: '{asset.md5_checksum}' expected, got '{hash}''`)
+            end
+
+            -- Remove all the remaining promises and mark the task as finished.
+            downloading_finished = true
+            patching_finished = true
+            asset_checksum = nil
+
+            return true, nil
+        end
+
+        return false, nil
     end)
 end
 
@@ -500,6 +740,22 @@ local function download_sophon_manifest(
     platform: Platform,
     updater: (current: number, total: number) -> ()
 ): Promise<{ SophonAsset }>
+    if not manifest.id then
+        error("download_sophon_manifest: 'manifest.id' is missing")
+    end
+
+    if not manifest.md5_checksum then
+        error("download_sophon_manifest: 'manifest.md5_checksum' is missing")
+    end
+
+    if not manifest.download_url then
+        error("download_sophon_manifest: 'manifest.download_url' is missing")
+    end
+
+    if manifest.compressed == nil then
+        error("download_sophon_manifest: 'manifest.compressed' is missing")
+    end
+
     local protobuf_manifest_path: string = path.join(sophon_manifests_folder, manifest.id)
     local decoded_manifest_cache_path: string = path.join(sophon_manifests_cache_folder, manifest.md5_checksum)
 
@@ -583,7 +839,7 @@ local function download_sophon_manifest(
                     -- If manifest redownloading is forbidden then throw an
                     -- error.
                     if not state.redownload then
-                        error(`downloaded sophon protobuf manifest has invalid hash: '{manifest.md5_checksum}' expected, got '{hash}'; download url: '{manifest.download_url}'`)
+                        error(`download_sophon_manifest: downloaded sophon protobuf manifest has invalid hash: '{manifest.md5_checksum}' expected, got '{hash}'; download url: '{manifest.download_url}'`)
                     end
 
                     state = {
@@ -680,7 +936,7 @@ local function download_sophon_manifest(
 
         -- Should be unreachable.
         else
-            error("FIXME: unreachable download_sophon_manifest branch")
+            error("download_sophon_manifest: unreachable branch")
         end
     end)
 end
@@ -695,10 +951,30 @@ local function fetch_sophon_api(
     game_info: GameInfo,
     edition: Edition
 ): Promise<SophonInfo>
+    if not game_info.game_biz then
+        error("fetch_sophon_api: 'game_info.game_biz' is missing")
+    end
+
     local index = `{edition}-{game_info.game_id}`
 
     if __sophon_api_cache[index] then
         return task.create(clone(__sophon_api_cache[index]))
+    end
+
+    if not game_info.game_id then
+        error("fetch_sophon_api: 'game_info.game_id' is missing")
+    end
+
+    if not game_info.package_id then
+        error("fetch_sophon_api: 'game_info.package_id' is missing")
+    end
+
+    if not game_info.branch then
+        error("fetch_sophon_api: 'game_info.branch' is missing")
+    end
+
+    if not game_info.password then
+        error("fetch_sophon_api: 'game_info.password' is missing")
     end
 
     local request = http.fetch(`{api_url}/downloader/sophon_chunk/api/getBuild?branch={game_info.branch}&package_id={game_info.package_id}&password={game_info.password}`)
@@ -775,5 +1051,6 @@ end
 return {
     download_manifest = download_sophon_manifest,
     download_chunk = download_sophon_chunk,
+    patch_asset = patch_sophon_asset,
     fetch_api = fetch_sophon_api
 }

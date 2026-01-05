@@ -110,6 +110,28 @@ type SophonChunk = {
     }
 }
 
+type SophonDownloadManifestInfo = {
+    id: string,
+    md5_checksum: string, -- uncompressed protobuf manifest file md5 hash
+    download_url: string, -- full URL to download the protobuf manifest
+    compressed: boolean
+}
+
+type SophonDownloadChunkInfo = {
+    name: string,
+    md5_checksum: string, -- uncompressed chunk file md5 hash
+    download_url: string -- full URL to download the chunk
+}
+
+type SophonDownloadAssetInfo = {
+    name: string,
+    md5_checksum: string, -- complete asset md5 hash
+    chunks: {{
+        chunk: SophonDownloadChunkInfo, -- chunk download info
+        offset: number -- chunk's offset within the asset
+    }}
+}
+
 ----------------------------------------
 -- Constants
 
@@ -192,7 +214,7 @@ local function fetch_games_api(edition: Edition): Promise<{ GameInfo }>
 end
 
 return function()
-    local sophon = import("sophon")
+    local iter, sophon = import("iterable", "sophon")
 
     local game_info = fetch_games_api("global"):await()[1]
     local sophon_info = game_info.fetch_sophon_info():await()
@@ -207,32 +229,36 @@ return function()
         end
     ):await()
 
-    dbg(assets)
+    local output_folder = path.join(path.temp_dir(), "sophon_assets_output")
 
     for _, asset in ipairs(assets) do
         print(`processing asset '{asset.name}' ({asset.size / 1024} KiB)`)
 
-        for _, chunk in ipairs(asset.chunks) do
-            print(`  downloading chunk '{chunk.name}' ({chunk.uncompressed.size / 1024} KiB)`)
+        local asset_info: SophonDownloadAssetInfo = {
+            name = asset.name,
+            md5_checksum = asset.md5_checksum,
+            chunks = iter(asset.chunks)
+                .map(function(chunk: SophonChunk): { chunk: SophonDownloadChunkInfo, offset: number }
+                    return {
+                        chunk = {
+                            name = chunk.name,
+                            md5_checksum = chunk.uncompressed.md5_checksum,
+                            download_url = `{manifest_info.chunks.download_url}/{chunk.name}`
+                        },
+                        offset = chunk.offset
+                    }
+                end)
+                .collect()
+        }
 
-            print(`{manifest_info.chunks.download_url}/{chunk.name}`)
-
-            local chunk = {
-                name = chunk.name,
-                md5_checksum = chunk.uncompressed.md5_checksum,
-                download_url = `{manifest_info.chunks.download_url}/{chunk.name}`
-            }
-
-            local chunk_path = sophon.download_chunk(
-                chunk,
-                "x86_64-linux",
-                function(current: number, total: number)
-                    print(`    download progress: {current / total * 100}%`)
-                end
-            ):await()
-
-            print(`  chunk path: {chunk_path}`)
-        end
+        sophon.patch_asset(
+            output_folder,
+            asset_info,
+            "x86_64-linux",
+            function(current: number, total: number)
+                print(`Progress: {current / 1024} KiB / {total / 1024} KiB`)
+            end
+        ):await()
     end
 end
 
