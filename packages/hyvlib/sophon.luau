@@ -104,8 +104,7 @@ type SophonManifestInfo = {
         uncompressed_size: string,
         md5_checksum: string,
         download_url: string,
-        compressed: boolean,
-        download: (platform: Platform, updater: (current: number, total: number) -> ()) -> Promise<{ SophonAsset }>
+        compressed: boolean
     },
     chunks: {
         compressed_size: string,
@@ -1013,18 +1012,7 @@ local function fetch_sophon_api(
                         uncompressed_size = sophon_info.manifest.uncompressed_size,
                         md5_checksum = sophon_info.manifest.checksum,
                         download_url = manifest_download_url,
-                        compressed = sophon_info.manifest_download.compression,
-
-                        download = function(platform: Platform, updater: (current: number, total: number) -> ()): Promise<{ SophonAsset }>
-                            local manifest = {
-                                id = sophon_info.manifest.id,
-                                md5_checksum = sophon_info.manifest.checksum,
-                                download_url = manifest_download_url,
-                                compressed = sophon_info.manifest_download.compression
-                            }
-
-                            return download_sophon_manifest(manifest, platform, updater)
-                        end
+                        compressed = sophon_info.manifest_download.compression
                     },
                     chunks = {
                         compressed_size = sophon_info.stats.compressed_size,

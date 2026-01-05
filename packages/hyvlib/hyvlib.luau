@@ -222,10 +222,18 @@ return function()
 
     dbg(manifest_info)
 
-    local assets = manifest_info.manifest.download(
+    local download_manifest = {
+        id = manifest_info.manifest.id,
+        md5_checksum = manifest_info.manifest.md5_checksum,
+        download_url = manifest_info.manifest.download_url,
+        compressed = manifest_info.manifest.compressed
+    }
+
+    local assets = sophon.download_manifest(
+        download_manifest,
         "x86_64-linux",
         function(current: number, total: number)
-            dbg(`download progress: {current / total * 100}%`)
+            print(`Progress: {current / 1024} KiB / {total / 1024} KiB`)
         end
     ):await()
 
@@ -234,7 +242,7 @@ return function()
     for _, asset in ipairs(assets) do
         print(`processing asset '{asset.name}' ({asset.size / 1024} KiB)`)
 
-        local asset_info: SophonDownloadAssetInfo = {
+        local download_asset: SophonDownloadAssetInfo = {
             name = asset.name,
             md5_checksum = asset.md5_checksum,
             chunks = iter(asset.chunks)
@@ -253,7 +261,7 @@ return function()
 
         sophon.patch_asset(
             output_folder,
-            asset_info,
+            download_asset,
             "x86_64-linux",
             function(current: number, total: number)
                 print(`Progress: {current / 1024} KiB / {total / 1024} KiB`)
