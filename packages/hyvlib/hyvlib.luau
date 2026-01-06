@@ -74,7 +74,8 @@ type GameComponentInfo = {
     download: (
         game_folder: string,
         platform: Platform,
-        updater: (current: number, total: number) -> ()
+        updater: (current: number, total: number) -> (),
+        max_parallel_assets: number | nil
     ) -> Promise<nil>
 }
 
@@ -385,7 +386,16 @@ local function download_game_component(
                         output_folder,
                         download_asset,
                         platform,
-                        updater
+                        function(current: number, total: number)
+                            for i, patching_info in ipairs(patch_assets_pool) do
+                                if patching_info.asset.name == asset.name then
+                                    patch_assets_pool[i].current = current
+                                    patch_assets_pool[i].total = total
+
+                                    break
+                                end
+                            end
+                        end
                     ),
                     current = 0,
                     total = 0
@@ -453,13 +463,15 @@ local function fetch_game_components(
                     download = function(
                         game_folder: string,
                         platform: Platform,
-                        updater: (current: number, total: number) -> ()
+                        updater: (current: number, total: number) -> (),
+                        max_parallel_assets: number | nil
                     ): Promise<nil>
                         return download_game_component(
                             game_folder,
                             manifest,
                             platform,
-                            updater
+                            updater,
+                            max_parallel_assets
                         )
                     end
                 }
@@ -578,7 +590,8 @@ return function()
             if total > 0 then
                 print(`Downloading: {math.floor(current / total * 10000) / 100}% of {total / 1024 / 1024} MiB`)
             end
-        end
+        end,
+        4
     ):await()
 
     -- local game_info = fetch_games_api("global"):await()[1]

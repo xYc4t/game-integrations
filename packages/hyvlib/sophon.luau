@@ -456,183 +456,254 @@ local function patch_sophon_asset(
         error("patch_sophon_asset: 'asset.chunks' is missing")
     end
 
-    -- TODO: verify asset hash BEFORE applying patches, maybe it's already
-    --       downloaded and patched!
+    local asset_path: string = path.join(output_folder, asset.name)
 
-    -- Open output asset file and create it if needed.
-    local asset_path = path.join(output_folder, asset.name)
+    type DownloadPatchAssetBranch = {
+        branch: "download_patch_asset",
+        downloading_pool: {{
+            promise: Promise<string> | nil,
+            current: number,
+            total: number,
+            offset: number
+        }},
+        patching_pool: {{
+            promise: Promise<nil> | nil,
+            handle: number
+        }},
+        asset_file: number,
+        downloading_started: boolean,
+        downloading_finished: boolean,
+        patching_finished: boolean
+    }
 
-    local asset_file = fs.open(asset_path, {
-        write = true,
-        create = true
-    })
+    type State =
+        | { branch: "none" }
+        | { branch: "verify_asset_hash", promise: Promise<string>, redownload: boolean }
+        | DownloadPatchAssetBranch
 
-    -- Create pool of promises to download sophon chunks used in the asset.
-    local chunks_download_pool = {} :: {{ promise: Promise<string> | nil, current: number, total: number, offset: number }}
-    local chunks_patching_pool = {} :: {{ promise: Promise<nil> | nil, handle: number }}
+    local state: State = { branch = "none" }
 
-    -- Iterate over all the asset's chunks.
-    for i, chunk_info in ipairs(asset.chunks) do
-        if not chunk_info.chunk then
-            error("download_sophon_chunk: 'asset.chunks[].chunk' is missing")
-        end
+    return task.create(function(): (boolean, nil)
+        -- If we didn't start asset patching yet.
+        if state.branch == "none" then
+            -- If asset file already exists then verify its hash.
+            if fs.exists(asset_path) then
+                state = {
+                    branch = "verify_asset_hash",
+                    promise = calc_file_md5(asset_path),
+                    redownload = true
+                }
 
-        if chunk_info.offset == nil then
-            error("download_sophon_chunk: 'asset.chunks[].offset' is missing")
-        end
-
-        -- Schedule chunk downloading and put the promise into the pool.
-        local chunk: SophonDownloadChunkInfo = {
-            name = chunk_info.chunk.name,
-            md5_checksum = chunk_info.chunk.md5_checksum,
-            download_url = chunk_info.chunk.download_url
-        }
-
-        local promise = download_sophon_chunk(
-            chunk,
-            platform,
-            function(current: number, total: number)
-                chunks_download_pool[i].current = current
-                chunks_download_pool[i].total = total
-            end
-        )
-
-        table.insert(chunks_download_pool, {
-            promise = promise,
-            current = 0,
-            total = 0,
-            offset = chunk_info.offset
-        })
-    end
-
-    local downloading_finished = false
-    local patching_finished = false
-    local asset_checksum: Promise<string> | nil = nil
-
-    return task.create(function()
-        -- If downloading, patching and checksum verification finished then
-        -- resolve the promise.
-        if downloading_finished and patching_finished and not asset_checksum then
-            return true, nil
-        end
-
-        -- Calculate current and total progress of all the chunks downloading
-        -- and send them to the updater callback.
-        local current_progress = 0
-        local total_progress = 0
-
-        for _, download_info in ipairs(chunks_download_pool) do
-            current_progress += download_info.current
-            total_progress += download_info.total
-        end
-
-        updater(current_progress, total_progress)
-
-        -- If downloading is not finished yet.
-        if not downloading_finished then
-            local has_unresolved_promises = false
-
-            -- Iterate over the chunks downloading promises.
-            for i, download_info in ipairs(chunks_download_pool) do
-                -- If chunk is not downloaded yet (promise is not resolved) then
-                -- try to poll it.
-                if download_info.promise then
-                    local status, chunk_path = download_info.promise:poll()
-
-                    -- If promise has resolved then remove it from the pool and
-                    -- schedule asset file patching.
-                    if status then
-                        local chunk_file = fs.open(chunk_path)
-
-                        table.insert(chunks_patching_pool, {
-                            promise = patch_file(asset_file, chunk_file, download_info.offset),
-                            handle = chunk_file
-                        })
-
-                        -- Remove chunk downloading promise from the pool.
-                        chunks_download_pool[i].promise = nil
-                    else
-                        -- Remember that at least one promise is not resolved
-                        -- yet.
-                        has_unresolved_promises = true
-                    end
-                end
+            -- Otherwise start re-downloading all the chunks and patching the
+            -- asset file.
+            else
+                state = {
+                    branch = "download_patch_asset",
+                    downloading_pool = {},
+                    patching_pool = {},
+                    asset_file = fs.open(asset_path, {
+                        write = true,
+                        create = true
+                    }),
+                    downloading_started = false,
+                    downloading_finished = false,
+                    patching_finished = false
+                }
             end
 
-            -- If there's no more unresolved promises then remember that we've
-            -- finished downloading all the chunks to not to iterate over their
-            -- pool once again.
-            downloading_finished = not has_unresolved_promises
-        end
+            return false, nil
 
-        -- If asset patching is not finished yet.
-        if not patching_finished then
-            local has_unresolved_promises = false
+        -- If we're verifying the asset's hash.
+        elseif state.branch == "verify_asset_hash" then
+            -- Poll asset file hash calculation.
+            local status, hash = state.promise:poll()
 
-            -- Iterate over the chunks patching promises.
-            for i, patch_info in ipairs(chunks_patching_pool) do
-                -- If chunk is not patched yet (promise is not resolved) then
-                -- try to poll it.
-                if patch_info.promise then
-                    if patch_info.promise:poll() then
-                        -- Close the chunk file handle.
-                        fs.close(chunks_patching_pool[i].handle)
-
-                        -- Remove chunk patching promise from the pool.
-                        chunks_patching_pool[i].promise = nil
-                    else
-                        -- Remember that at least one promise is not resolved
-                        -- yet.
-                        has_unresolved_promises = true
-                    end
-                end
-            end
-
-            -- Do not update the patching finished flag until chunks downloading
-            -- is finished because some chunks might not yet be downloaded to
-            -- be used in asset patching.
-            if downloading_finished then
-                -- If there's no more unresolved promises then remember that
-                -- we've finished patching all the chunks to not to iterate over
-                -- their pool once again.
-                patching_finished = not has_unresolved_promises
-
-                -- If we've finished patching the asset file then verify its
-                -- hash.
-                if patching_finished then
-                    -- Close the asset file and flush all the buffered data to
-                    -- disk.
-                    fs.close(asset_file)
-
-                    asset_checksum = calc_file_md5(asset_path)
-                end
-            end
-        end
-
-        -- If we're verifying the asset file's hash.
-        if asset_checksum then
-            -- Poll file hash calculation.
-            local status, hash = asset_checksum:poll()
-
-            -- If it's not finished yet - keep waiting.
+            -- If the hash is not calculated yet then continue waiting.
             if not status then
                 return false, nil
             end
 
-            -- If hash is mismatched then return an error.
-            if hash ~= asset.md5_checksum then
+            -- If hash matched then finish the task.
+            if hash == asset.md5_checksum then
+                return true, nil
+
+            -- If hash is mismatched but we're allowed to redownload the asset
+            -- file then try to redownload it.
+            elseif state.redownload then
+                state = {
+                    branch = "download_patch_asset",
+                    downloading_pool = {},
+                    patching_pool = {},
+                    asset_file = fs.open(asset_path, {
+                        write = true,
+                        create = true
+                    }),
+                    downloading_started = false,
+                    downloading_finished = false,
+                    patching_finished = false
+                }
+
+                return false, nil
+
+            -- Otherwise return an error.
+            else
                 error(`patch_sophon_asset: patched sophon asset has invalid hash: '{asset.md5_checksum}' expected, got '{hash}'`)
             end
 
-            -- Remove all the remaining promises and mark the task as finished.
-            downloading_finished = true
-            patching_finished = true
-            asset_checksum = nil
+        -- If we're downloading chunks and applying them to the asset file.
+        elseif state.branch == "download_patch_asset" then
+            -- If we didn't start chunks downloading yet - schedule them.
+            if state.downloading_started then
+                -- Iterate over all the asset's chunks.
+                for i, chunk_info in ipairs(asset.chunks) do
+                    if not chunk_info.chunk then
+                        error("download_sophon_chunk: 'asset.chunks[].chunk' is missing")
+                    end
 
-            return true, nil
+                    if chunk_info.offset == nil then
+                        error("download_sophon_chunk: 'asset.chunks[].offset' is missing")
+                    end
+
+                    -- Schedule chunk downloading and put the promise into the pool.
+                    local chunk: SophonDownloadChunkInfo = {
+                        name = chunk_info.chunk.name,
+                        md5_checksum = chunk_info.chunk.md5_checksum,
+                        download_url = chunk_info.chunk.download_url
+                    }
+
+                    local promise = download_sophon_chunk(
+                        chunk,
+                        platform,
+                        function(current: number, total: number)
+                            -- Just in case branch changes for some reason.
+                            if state.downloading_pool then
+                                state.downloading_pool[i].current = current
+                                state.downloading_pool[i].total = total
+                            end
+                        end
+                    )
+
+                    table.insert(state.downloading_pool, {
+                        promise = promise,
+                        current = 0,
+                        total = 0,
+                        offset = chunk_info.offset
+                    })
+                end
+
+                state.downloading_started = true
+
+            -- Otherwise, if we've already started downloading chunks.
+            else
+                -- Calculate current and total progress of all the chunks
+                -- downloading and send them to the updater callback.
+                local current_progress = 0
+                local total_progress = 0
+
+                for _, download_info in ipairs(state.downloading_pool) do
+                    current_progress += download_info.current
+                    total_progress += download_info.total
+                end
+
+                updater(current_progress, total_progress)
+
+                -- If chunks downloading is not finished yet.
+                if not state.downloading_finished then
+                    local has_unresolved_promises = false
+
+                    -- Iterate over the chunks downloading promises.
+                    for i, download_info in ipairs(state.downloading_pool) do
+                        -- If chunk is not downloaded yet (promise is not
+                        -- resolved) then try to poll it.
+                        if download_info.promise then
+                            local status, chunk_path = download_info.promise:poll()
+
+                            -- If promise has resolved then remove it from the
+                            -- pool and schedule asset file patching.
+                            if status then
+                                local chunk_file = fs.open(chunk_path)
+
+                                table.insert(state.patching_pool, {
+                                    promise = patch_file(
+                                        state.asset_file,
+                                        chunk_file,
+                                        download_info.offset
+                                    ),
+                                    handle = chunk_file
+                                })
+
+                                -- Remove chunk downloading promise from the
+                                -- pool.
+                                state.downloading_pool[i].promise = nil
+                            else
+                                -- Remember that at least one promise is not
+                                -- resolved yet.
+                                has_unresolved_promises = true
+                            end
+                        end
+                    end
+
+                    -- If there's no more unresolved promises then remember that
+                    -- we've finished downloading all the chunks to not to
+                    -- iterate over their pool once again.
+                    state.downloading_finished = not has_unresolved_promises
+                end
+
+                -- If asset patching is not finished yet.
+                if not state.patching_finished then
+                    local has_unresolved_promises = false
+
+                    -- Iterate over the chunks patching promises.
+                    for i, patch_info in ipairs(state.patching_pool) do
+                        -- If chunk is not patched yet (promise is not resolved)
+                        -- then try to poll it.
+                        if patch_info.promise then
+                            if patch_info.promise:poll() then
+                                -- Close the chunk file handle.
+                                fs.close(state.patching_pool[i].handle)
+
+                                -- Remove chunk patching promise from the pool.
+                                state.patching_pool[i].promise = nil
+                            else
+                                -- Remember that at least one promise is not
+                                -- resolved yet.
+                                has_unresolved_promises = true
+                            end
+                        end
+                    end
+
+                    -- Do not update the patching finished flag until chunks
+                    -- downloading is finished because some chunks might not yet
+                    -- be downloaded to be used in asset patching.
+                    if state.downloading_finished then
+                        -- If there's no more unresolved promises then remember
+                        -- that we've finished patching all the chunks to not to
+                        -- iterate over their pool once again.
+                        state.patching_finished = not has_unresolved_promises
+
+                        -- If we've finished patching the asset file then verify
+                        -- its hash.
+                        if state.patching_finished then
+                            -- Close the asset file and flush all the buffered
+                            -- data to disk.
+                            fs.close(state.asset_file)
+
+                            state = {
+                                branch = "verify_asset_hash",
+                                promise = calc_file_md5(asset_path),
+                                redownload = false
+                            }
+                        end
+                    end
+                end
+            end
+
+            return false, nil
+
+        -- Should be unreachable.
+        else
+            error("patch_sophon_asset: unreachable branch")
         end
-
-        return false, nil
     end)
 end
 
