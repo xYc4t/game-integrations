@@ -587,9 +587,7 @@ return function()
         output_folder,
         "x86_64-linux",
         function(current: number, total: number)
-            if total > 0 then
-                print(`Downloading: {math.floor(current / total * 10000) / 100}% of {total / 1024 / 1024} MiB`)
-            end
+            print(`Downloading: {math.floor(current / total * 10000) / 100}% of {total / 1024 / 1024} MiB`)
         end,
         4
     ):await()

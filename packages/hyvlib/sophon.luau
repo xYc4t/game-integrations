@@ -303,11 +303,21 @@ local function download_sophon_chunk(
 
     local state: State = { branch = "none" }
 
+    local progress_current = 0
+    local progress_total = 0
+
     return task.create(function(): (boolean | nil, string | nil)
+        updater(progress_current, progress_total)
+
         -- If we didn't do anything yet.
         if state.branch == "none" then
             -- If chunk is already downloaded then check its hash.
             if fs.exists(chunk_path) then
+                local metadata = fs.metadata(chunk_path)
+
+                progress_current = metadata.length or 0
+                progress_total = metadata.length or 0
+
                 state = {
                     branch = "check_chunk_hash",
                     promise = calc_file_md5(chunk_path),
@@ -366,18 +376,18 @@ local function download_sophon_chunk(
         elseif state.branch == "download_chunk" then
             local progress = downloader.progress(state.handle) :: { current: number, total: number, finished: boolean }
 
-            updater(progress.current, progress.total)
+            progress_current = progress.current
+            progress_total = progress.total
 
             -- If downloading finished then check downloaded chunk hash.
             if progress.finished then
                 -- Wait for downloading finish even though the progress
                 -- reports that it's already finished. Some data might not be
                 -- written to disk still.
-                local total = downloader.wait(state.handle)
+                local chunk_size = downloader.wait(state.handle)
 
-                -- Update the callback once again to send the latest downloaded
-                -- file size.
-                updater(total, total)
+                progress_current = chunk_size
+                progress_total = chunk_size
 
                 -- Decompress the chunk.
                 state = {
@@ -553,15 +563,15 @@ local function patch_sophon_asset(
         -- If we're downloading chunks and applying them to the asset file.
         elseif state.branch == "download_patch_asset" then
             -- If we didn't start chunks downloading yet - schedule them.
-            if state.downloading_started then
+            if not state.downloading_started then
                 -- Iterate over all the asset's chunks.
                 for i, chunk_info in ipairs(asset.chunks) do
                     if not chunk_info.chunk then
-                        error("download_sophon_chunk: 'asset.chunks[].chunk' is missing")
+                        error("patch_sophon_asset: 'asset.chunks[].chunk' is missing")
                     end
 
                     if chunk_info.offset == nil then
-                        error("download_sophon_chunk: 'asset.chunks[].offset' is missing")
+                        error("patch_sophon_asset: 'asset.chunks[].offset' is missing")
                     end
 
                     -- Schedule chunk downloading and put the promise into the pool.
