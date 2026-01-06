@@ -428,6 +428,91 @@ local function download_game_component(
     end)
 end
 
+local function fetch_game_components(
+    region: Region,
+    game_info: SophonFetchApiInfo
+): Promise<{ GameComponentInfo }>
+    local iter = import("iterable")
+
+    local promise = fetch_sophon_api(region, game_info)
+
+    return task.create(function(): (boolean, { GameComponentInfo } | nil)
+        local status, result = promise:poll()
+
+        if not status then
+            return false, nil
+        end
+
+        -- Prepare components list from the returned
+        -- sophon manifests.
+        local components = iter(result.manifests)
+            .map(function(manifest: SophonManifestInfo): GameComponentInfo
+                return {
+                    name = manifest.matching_field,
+
+                    download = function(
+                        game_folder: string,
+                        platform: Platform,
+                        updater: (current: number, total: number) -> ()
+                    ): Promise<nil>
+                        return download_game_component(
+                            game_folder,
+                            manifest,
+                            platform,
+                            updater
+                        )
+                    end
+                }
+            end)
+            .collect() :: { GameComponentInfo }
+
+        return true, components
+    end)
+end
+
+local function fetch_game_info(game: Game, region: Region, platform: Platform): Promise<GameInfo>
+    local promise = fetch_games_api(region)
+
+    return task.create(function(): (boolean, GameInfo | nil)
+        local status, api = promise:poll()
+
+        if not status then
+            return false, nil
+        end
+
+        local iter, semver = import("iterable", "semver")
+
+        local game_info: RawGameInfo | nil = iter(api)
+            .find(function(info: RawGameInfo)
+                return info.game.biz == api_info[region].games[game].biz
+                    and info.game.id == api_info[region].games[game].id
+            end)
+
+        if not game_info then
+            error(`hyvlib: failed to fetch '{game}' game info`)
+        end
+
+        local game_info: GameInfo = {
+            version = semver(game_info.main.tag),
+            diffs = iter(game_info.main.diff_tags)
+                .map(semver)
+                .collect(),
+
+            fetch_components = function(): Promise<{ GameComponentInfo }>
+                return fetch_game_components(region, {
+                    branch = game_info.main.branch,
+                    game_biz = game_info.game.biz,
+                    game_id = game_info.game.id,
+                    package_id = game_info.main.package_id,
+                    password = game_info.main.password
+                })
+            end
+        }
+
+        return true, game_info
+    end)
+end
+
 ----------------------------------------
 -- Hyvlib export functions
 
@@ -441,110 +526,36 @@ type Hyvlib = {
     }}
 }
 
+local function __blank_parse_version(): Promise<Semver | nil>
+    return task.create(nil)
+end
+
 local hyvlib: Hyvlib = {
     games = {
         genshin = {
             -- TODO: parse version from actual game files
-            try_parse_version = function(game_folder: string, region: Region): Promise<Semver | nil>
-                local version_path = path.join(game_folder, ".version")
-
-                if not fs.exists(version_path) then
-                    return task.create(nil)
-                end
-
-                local promise = fs.read_file()
-
-                return task.create(function(): (boolean, Semver | nil)
-                    local status, version = promise:poll()
-
-                    if not status then
-                        return false, nil
-                    end
-
-                    local semver = import("semver")
-
-                    return true, semver(str.from_bytes(version))
-                end)
-            end,
+            try_parse_version = __blank_parse_version,
 
             fetch_info = function(region: Region, platform: Platform): Promise<GameInfo>
-                local promise = fetch_games_api(region)
+                return fetch_game_info("genshin", region, platform)
+            end
+        },
 
-                return task.create(function(): (boolean, GameInfo | nil)
-                    local status, api = promise:poll()
+        hsr = {
+            -- TODO: parse version from actual game files
+            try_parse_version = __blank_parse_version,
 
-                    if not status then
-                        return false, nil
-                    end
+            fetch_info = function(region: Region, platform: Platform): Promise<GameInfo>
+                return fetch_game_info("hsr", region, platform)
+            end
+        },
 
-                    local iter, semver = import("iterable", "semver")
+        zzz = {
+            -- TODO: parse version from actual game files
+            try_parse_version = __blank_parse_version,
 
-                    local game: Game = "genshin"
-
-                    local game_info: RawGameInfo | nil = iter(api)
-                        .find(function(info: RawGameInfo)
-                            return info.game.biz == api_info[region].games[game].biz
-                                and info.game.id == api_info[region].games[game].id
-                        end)
-
-                    if not game_info then
-                        error(`hyvlib: failed to fetch '{game}' game info`)
-                    end
-
-                    local game_info: GameInfo = {
-                        version = semver(game_info.main.tag),
-                        diffs = iter(game_info.main.diff_tags)
-                            .map(semver)
-                            .collect(),
-
-                        fetch_components = function(): Promise<{ GameComponentInfo }>
-                            local game_info = {
-                                branch = game_info.main.branch,
-                                game_biz = game_info.game.biz,
-                                game_id = game_info.game.id,
-                                package_id = game_info.main.package_id,
-                                password = game_info.main.password
-                            }
-
-                            local promise = fetch_sophon_api(region, game_info)
-
-                            return task.create(function(): (boolean, { GameComponentInfo } | nil)
-                                local status, result = promise:poll()
-
-                                if not status then
-                                    return false, nil
-                                end
-
-                                -- Prepare components list from the returned
-                                -- sophon manifests.
-                                local components = iter(result.manifests)
-                                    .map(function(manifest: SophonManifestInfo): GameComponentInfo
-                                        return {
-                                            name = manifest.matching_field,
-
-                                            download = function(
-                                                game_folder: string,
-                                                platform: Platform,
-                                                updater: (current: number, total: number) -> ()
-                                            ): Promise<nil>
-                                                return download_game_component(
-                                                    game_folder,
-                                                    manifest,
-                                                    platform,
-                                                    updater
-                                                )
-                                            end
-                                        }
-                                    end)
-                                    .collect() :: { GameComponentInfo }
-
-                                return true, components
-                            end)
-                        end
-                    }
-
-                    return true, game_info
-                end)
+            fetch_info = function(region: Region, platform: Platform): Promise<GameInfo>
+                return fetch_game_info("zzz", region, platform)
             end
         }
     }
@@ -553,21 +564,19 @@ local hyvlib: Hyvlib = {
 -- return hyvlib
 
 return function()
-    local game_info = hyvlib.games["genshin" :: Game].fetch_info("global"):await()
+    local game_info = hyvlib.games["zzz" :: Game].fetch_info("global"):await()
     local game_components = game_info.fetch_components():await()
 
     dbg(game_components)
 
     local output_folder = path.join(path.temp_dir(), "penis")
 
-    game_components[2].download(
+    game_components[1].download(
         output_folder,
         "x86_64-linux",
         function(current: number, total: number)
             if total > 0 then
                 print(`Downloading: {math.floor(current / total * 10000) / 100}% of {total / 1024 / 1024} MiB`)
-            else
-                print("Preparing download info...")
             end
         end
     ):await()
