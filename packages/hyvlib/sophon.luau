@@ -14,7 +14,7 @@
 -- You should have received a copy of the GNU General Public License
 -- along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-function import(...)
+function import(...): ...any
     return (load("import").value)(...)
 end
 
@@ -33,7 +33,7 @@ type Bytes = {
 
 type Semver = { major: number, minor: number, patch: number }
 
-type Edition = "global" | "china"
+type Region = "global" | "china"
 type Platform = "x86_64-linux"
 
 type GameInfo = {
@@ -448,6 +448,9 @@ local function patch_sophon_asset(
         error("patch_sophon_asset: 'asset.chunks' is missing")
     end
 
+    -- TODO: verify asset hash BEFORE applying patches, maybe it's already
+    --       downloaded and patched!
+
     -- Open output asset file and create it if needed.
     local asset_path = path.join(output_folder, asset.name)
 
@@ -610,7 +613,7 @@ local function patch_sophon_asset(
 
             -- If hash is mismatched then return an error.
             if hash ~= asset.md5_checksum then
-                error(`patch_sophon_asset: patched sophon asset has invalid hash: '{asset.md5_checksum}' expected, got '{hash}''`)
+                error(`patch_sophon_asset: patched sophon asset has invalid hash: '{asset.md5_checksum}' expected, got '{hash}'`)
             end
 
             -- Remove all the remaining promises and mark the task as finished.
@@ -948,13 +951,13 @@ local __sophon_api_cache: { [string]: SophonInfo } = {}
 local function fetch_sophon_api(
     api_url: string,
     game_info: GameInfo,
-    edition: Edition
+    region: Region
 ): Promise<SophonInfo>
     if not game_info.game_biz then
         error("fetch_sophon_api: 'game_info.game_biz' is missing")
     end
 
-    local index = `{edition}-{game_info.game_id}`
+    local index = `{region}-{game_info.game_id}`
 
     if __sophon_api_cache[index] then
         return task.create(clone(__sophon_api_cache[index]))
