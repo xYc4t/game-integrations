@@ -1,4 +1,4 @@
--- hyvlib/sophon v0.1.0
+-- hyvlib/sophon ("luaphon") v0.1.0
 -- Copyright (C) 2025 - 2026  Nikita Podvirnyi <krypt0nn@vk.com>
 --
 -- This program is free software: you can redistribute it and/or modify
