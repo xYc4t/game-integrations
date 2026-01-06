@@ -153,7 +153,12 @@ type SophonDownloadAssetInfo = {
     md5_checksum: string, -- complete asset md5 hash
     chunks: {{
         chunk: SophonDownloadChunkInfo, -- chunk download info
-        offset: number -- chunk's offset within the asset
+        offset: number, -- chunk's offset within the asset
+
+        -- Approximate uncompressed chunk size. If provided - then will be used
+        -- as default total chunk size value. Will be replaced by actual total
+        -- value once it becomes available.
+        size_hint: number | nil
     }}
 }
 
@@ -324,8 +329,10 @@ local function download_game_component(
     type ScheduledAssetInfo = {
         asset: SophonAsset,
         promise: Promise<nil>,
-        current: number,
-        total: number
+        progress: {
+            current: number,
+            total: number
+        }
     }
 
     local patch_assets_pool: { ScheduledAssetInfo } = {}
@@ -374,11 +381,14 @@ local function download_game_component(
                                     md5_checksum = chunk.uncompressed.md5_checksum,
                                     download_url = `{manifest_info.chunks.download_url}/{chunk.name}`
                                 },
-                                offset = chunk.offset
+                                offset = chunk.offset,
+                                size_hint = chunk.uncompressed.size
                             }
                         end)
                         .collect() :: { chunk: SophonDownloadChunkInfo, offset: number }
                 }
+
+                local progress = { current = 0, total = 0 }
 
                 table.insert(patch_assets_pool, {
                     asset = asset,
@@ -387,18 +397,11 @@ local function download_game_component(
                         download_asset,
                         platform,
                         function(current: number, total: number)
-                            for i, patching_info in ipairs(patch_assets_pool) do
-                                if patching_info.asset.name == asset.name then
-                                    patch_assets_pool[i].current = current
-                                    patch_assets_pool[i].total = total
-
-                                    break
-                                end
-                            end
+                            progress.current = current
+                            progress.total = total
                         end
                     ),
-                    current = 0,
-                    total = 0
+                    progress = progress
                 })
             end
 
@@ -408,8 +411,8 @@ local function download_game_component(
             local total_progress = finished_assets_total_size
 
             for _, patching_info in ipairs(patch_assets_pool) do
-                current_progress += patching_info.current
-                total_progress += patching_info.total
+                current_progress += patching_info.progress.current
+                total_progress += patching_info.progress.total
             end
 
             updater(current_progress, total_progress)
@@ -430,7 +433,7 @@ local function download_game_component(
                 -- Otherwise increment the total finished assets size. Since
                 -- we've already removed the task from the pool we don't need to
                 -- do anything else.
-                finished_assets_total_size += asset.total
+                finished_assets_total_size += asset.progress.total
             end
 
             return false, nil

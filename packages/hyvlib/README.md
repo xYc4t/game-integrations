@@ -22,8 +22,10 @@ Add hyvlib package to your integration package inputs:
 It should be possible to support all the hoyoverse games since they use the same
 downloading and updating mechanism. Here only tested games are listed.
 
-| Region   | Game      | Title                   |
-| -------- | --------- | ----------------------- |
-| `global` | `genshin` | Genshin Impact (global) |
+| Region   | Game      | Title                      |
+| -------- | --------- | -------------------------- |
+| `global` | `genshin` | Genshin Impact (global)    |
+| `global` | `hsr`     | Honkai: Star Rail (global) |
+| `global` | `zzz`     | Zenless Zone Zero (global) |
 
 Licensed under [GPL-3.0](../../LICENSE).

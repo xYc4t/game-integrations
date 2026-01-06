@@ -154,7 +154,12 @@ type SophonDownloadAssetInfo = {
     md5_checksum: string, -- complete asset md5 hash
     chunks: {{
         chunk: SophonDownloadChunkInfo, -- chunk download info
-        offset: number -- chunk's offset within the asset
+        offset: number, -- chunk's offset within the asset
+
+        -- Approximate uncompressed chunk size. If provided - then will be used
+        -- as default total chunk size value. Will be replaced by actual total
+        -- value once it becomes available.
+        size_hint: number | nil
     }}
 }
 
@@ -170,7 +175,7 @@ local sophon_chunks_folder: string          = path.join(temp_folder, "chunks")
 local sophon_manifest_protobuf: string = path.join(temp_folder, "manifest.proto")
 
 local downloader_handle: number = downloader.create()
-local downloader_update_interval: number = 150
+local downloader_update_interval: number = 100
 
 ----------------------------------------
 -- Utility
@@ -179,7 +184,7 @@ local function calc_file_md5(path: string): Promise<string>
     local file_hash = hash.digitize_file("md5", path)
 
     -- If file is small enough then calculate its hash immediately.
-    if fs.metadata(path).length < 1024 * 1024 then
+    if fs.metadata(path).length < 1024 * 1024 then -- files up to 1 MiB
         return task.create(function()
             return true, str.encode("hex", file_hash:await())
         end)
@@ -201,7 +206,7 @@ end
 local function decompress_file(path: string): Promise<nil>
     -- If input file is not very large then it's faster to decompress it all
     -- at once.
-    if fs.metadata(path).length < 1024 * 1024 then
+    if fs.metadata(path).length < 1024 * 1024 then -- files up to 1 MiB
         return task.create(function()
             local content = fs.read_file(path):await()
 
@@ -224,7 +229,7 @@ local function decompress_file(path: string): Promise<nil>
 
     local branch: "read" | "decompress" | "finished" = "read"
 
-    return task.create(function(): (boolean | nil, any)
+    return task.create(function(): (boolean, any)
         -- If we're still reading the file.
         if branch == "read" then
             -- Read chunk of the file.
@@ -617,7 +622,7 @@ local function patch_sophon_asset(
 
                     table.insert(state.downloading_pool, {
                         promise = promise,
-                        current = 0,
+                        current = chunk_info.size_hint or 0,
                         total = 0,
                         offset = chunk_info.offset
                     })
