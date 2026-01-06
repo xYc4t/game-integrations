@@ -178,18 +178,40 @@ local downloader_update_interval: number = 150
 local function calc_file_md5(path: string): Promise<string>
     local file_hash = hash.digitize_file("md5", path)
 
-    return task.create(function()
-        local status, result = file_hash:poll()
+    -- If file is small enough then calculate its hash immediately.
+    if fs.metadata(path).length < 1024 * 1024 then
+        return task.create(function()
+            return true, str.encode("hex", file_hash:await())
+        end)
 
-        if not status then
-            return false, nil
-        else
-            return true, str.encode("hex", result)
-        end
-    end)
+    -- Otherwise poll hash from background task.
+    else
+        return task.create(function()
+            local status, result = file_hash:poll()
+
+            if not status then
+                return false, nil
+            else
+                return true, str.encode("hex", result)
+            end
+        end)
+    end
 end
 
 local function decompress_file(path: string): Promise<nil>
+    -- If input file is not very large then it's faster to decompress it all
+    -- at once.
+    if fs.metadata(path).length < 1024 * 1024 then
+        return task.create(function()
+            local content = fs.read_file(path):await()
+
+            content = compression.decompress("zstd", content):await()
+
+            fs.write_file(path, content):await()
+        end)
+    end
+
+    -- Otherwise if it's a large file then decompress it by small chunks.
     local input_file = fs.open(path, { read = true })
 
     local output_file = fs.open(`{path}.decompressed`, {
@@ -605,17 +627,19 @@ local function patch_sophon_asset(
 
             -- Otherwise, if we've already started downloading chunks.
             else
-                -- Calculate current and total progress of all the chunks
-                -- downloading and send them to the updater callback.
-                local current_progress = 0
-                local total_progress = 0
+                local function call_updater()
+                    -- Calculate current and total progress of all the chunks
+                    -- downloading and send them to the updater callback.
+                    local current_progress = 0
+                    local total_progress = 0
 
-                for _, download_info in ipairs(state.downloading_pool) do
-                    current_progress += download_info.current
-                    total_progress += download_info.total
+                    for _, download_info in ipairs(state.downloading_pool) do
+                        current_progress += download_info.current
+                        total_progress += download_info.total
+                    end
+
+                    updater(current_progress, total_progress)
                 end
-
-                updater(current_progress, total_progress)
 
                 -- If chunks downloading is not finished yet.
                 if not state.downloading_finished then
@@ -627,6 +651,10 @@ local function patch_sophon_asset(
                         -- resolved) then try to poll it.
                         if download_info.promise then
                             local status, chunk_path = download_info.promise:poll()
+
+                            -- Since polling takes some time we should call the
+                            -- updater every time for better user experience.
+                            call_updater()
 
                             -- If promise has resolved then remove it from the
                             -- pool and schedule asset file patching.
@@ -679,6 +707,10 @@ local function patch_sophon_asset(
                                 -- resolved yet.
                                 has_unresolved_promises = true
                             end
+
+                            -- Since polling takes some time we should call the
+                            -- updater every time for better user experience.
+                            call_updater()
                         end
                     end
 
