@@ -586,11 +586,21 @@ return function()
 
     local output_folder = path.join(path.temp_dir(), "penis")
 
+    local started_at = system.local_time()
+
     game_components[1].download(
         output_folder,
         "x86_64-linux",
         function(current: number, total: number)
-            print(`Downloading: {math.floor(current / total * 10000) / 100}% of {total / 1024 / 1024} MiB`)
+            if total > 0 then
+                local time_delta = math.max(system.local_time() - started_at, 0)
+
+                local download_percent = math.floor(current / total * 10000) / 100
+                local download_total   = math.floor(total / 1024 / 1024 * 100) / 100
+                local download_speed   = math.floor(current / time_delta / 1024 * 100) / 100
+
+                print(`Downloading: {download_percent}% of {download_total} MiB ({download_speed} KiB/s)`)
+            end
         end,
         4
     ):await()
