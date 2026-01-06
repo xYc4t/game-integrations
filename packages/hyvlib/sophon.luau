@@ -420,8 +420,6 @@ local function patch_file(
     patch_hadle: number,
     offset: number
 ): Promise<nil>
-    fs.seek(base_handle, offset)
-
     return task.create(function()
         local chunk = fs.read(patch_hadle)
 
@@ -431,7 +429,9 @@ local function patch_file(
             return true, nil
         end
 
-        fs.write(base_handle, chunk)
+        fs.write(base_handle, chunk, offset)
+
+        offset += #chunk
 
         return false, nil
     end)
@@ -444,6 +444,14 @@ local function patch_sophon_asset(
     platform: Platform,
     updater: (current: number, total: number) -> ()
 ): Promise<nil>
+    if not asset.name then
+        error("patch_sophon_asset: 'asset.name' is missing")
+    end
+
+    if not asset.md5_checksum then
+        error("patch_sophon_asset: 'asset.md5_checksum' is missing")
+    end
+
     if not asset.chunks then
         error("patch_sophon_asset: 'asset.chunks' is missing")
     end
