@@ -2,27 +2,27 @@
     "format": 1,
     "games": [
         {
-            "url": "https://raw.githubusercontent.com/xYc4t/game-integrations/games/genshin/manifest.json",
+            "url": "https://raw.githubusercontent.com/xYc4t/game-integrations/refs/heads/master/games/genshin/manifest.json",
             "featured": true
         },
         {
-            "url": "https://raw.githubusercontent.com/xYc4t/game-integrations/games/zzz/manifest.json",
+            "url": "https://raw.githubusercontent.com/xYc4t/game-integrations/refs/heads/master/games/zzz/manifest.json",
             "featured": false
         },
         {
-            "url": "https://raw.githubusercontent.com/xYc4t/game-integrations/games/hsr/manifest.json",
+            "url": "https://raw.githubusercontent.com/xYc4t/game-integrations/refs/heads/master/games/hsr/manifest.json",
             "featured": true
         },
         {
-            "url": "https://raw.githubusercontent.com/xYc4t/game-integrations/games/hi3/manifest.json",
+            "url": "https://raw.githubusercontent.com/xYc4t/game-integrations/refs/heads/master/games/hi3/manifest.json",
             "featured": false
         },
         {
-            "url": "https://raw.githubusercontent.com/xYc4t/game-integrations/games/votv/manifest.json",
+            "url": "https://raw.githubusercontent.com/xYc4t/game-integrations/refs/heads/master/games/votv/manifest.json",
             "featured": true
         },
         {
-            "url": "https://raw.githubusercontent.com/xYc4t/game-integrations/games/wuwa/manifest.json",
+            "url": "https://raw.githubusercontent.com/xYc4t/game-integrations/refs/heads/master/games/wuwa/manifest.json",
             "featured": true
         }
     ]
